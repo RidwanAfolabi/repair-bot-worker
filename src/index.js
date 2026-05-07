@@ -6,7 +6,7 @@
  *   WA_TOKEN           — Permanent System User access token from Meta
  *   WA_VERIFY_TOKEN    — Secret string you set when registering webhook in Meta portal
  *   WA_PHONE_NUMBER_ID — Phone Number ID from Meta Developer → WhatsApp → API Setup
- *   CLAUDE_API_KEY     — Anthropic API key //Could also use Gemini or OpenAI
+ *   GEMINI_API_KEY     — Google Gemini API key (from aistudio.google.com)
  *   STAFF_WA_NUMBER    — Staff WhatsApp number for escalation alerts e.g. 60123456789
  *
  * D1 binding (wrangler.toml):

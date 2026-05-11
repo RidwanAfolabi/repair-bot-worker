@@ -7,13 +7,10 @@
  *   WA_VERIFY_TOKEN    — Secret string you set when registering webhook in Meta portal
  *   WA_PHONE_NUMBER_ID — Phone Number ID from Meta Developer → WhatsApp → API Setup
  *   GEMINI_API_KEY     — Google Gemini API key (from aistudio.google.com)
- *   STAFF_WA_NUMBER    — Staff WhatsApp number for escalation alerts e.g. 60123456789
+ *   STAFF_WA_NUMBER    — Manager's personal WhatsApp number for escalation alerts e.g. 60123456789
  *
- * D1 binding (wrangler.toml):
- *   [[d1_databases]]
- *   binding = "DB"
- *   database_name = "repair-bot-db"
- *   database_id = "YOUR_D1_DATABASE_ID"
+ * D1 binding (wrangler.jsonc):
+ *   "d1_databases": [{ "binding": "DB", "database_name": "repair-bot-db", "database_id": "YOUR_ID" }]
  */
 
 import { handleIncomingMessage }            from './bot.js';
@@ -23,12 +20,16 @@ import { sendTextMessage, sendReadReceipt } from './whatsapp.js';
 export default {
   async fetch(request, env, ctx) {
 
-    // Ensure DB tables exist — safe on every request (uses CREATE TABLE IF NOT EXISTS)
-    await initDb(env.DB);
+    // Ensure DB tables exist — safe on every request (CREATE TABLE IF NOT EXISTS)
+    if (env.DB) {
+      await initDb(env.DB);
+    } else {
+      console.error('[Worker] env.DB is undefined — check D1 binding in wrangler.jsonc');
+    }
 
     const url = new URL(request.url);
 
-    // Health check — useful to confirm the Worker is alive
+    // Health check
     if (url.pathname === '/') {
       return new Response('iFix Express Bot is running ✅', { status: 200 });
     }
@@ -44,10 +45,24 @@ export default {
 
     // ── POST /webhook — Incoming WhatsApp messages ───────────────────────────
     if (request.method === 'POST') {
-      // Return 200 to Meta IMMEDIATELY — must respond within 5 seconds
-      // or Meta marks your webhook as failed and retries the message.
-      // All real work runs asynchronously inside ctx.waitUntil().
-      ctx.waitUntil(handlePostMessage(request.clone(), env));
+
+      // CRITICAL FIX: Parse the request body BEFORE returning the response.
+      // Cloudflare Workers closes the request stream once a response is sent —
+      // so request.clone() followed by body parsing inside ctx.waitUntil() fails
+      // with "Can't read from request stream after response has been sent."
+      // Solution: read the body first, then pass the parsed object to the handler.
+      let body;
+      try {
+        body = await request.json();
+      } catch (err) {
+        console.error('[Worker] Failed to parse request body:', err.message);
+        // Still return 200 — Meta must not retry this
+        return new Response('OK', { status: 200 });
+      }
+
+      // Return 200 to Meta immediately — Meta will retry if no response within 5s
+      // All real work runs asynchronously inside ctx.waitUntil()
+      ctx.waitUntil(handlePostMessage(body, env));
       return new Response('OK', { status: 200 });
     }
 
@@ -58,10 +73,6 @@ export default {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /webhook — Meta verification handshake
-//
-// Meta sends this once when you register (or update) your webhook URL.
-// It passes three query params — you must echo hub.challenge back to pass.
-// Fails silently if WA_VERIFY_TOKEN doesn't match what you set in Meta portal.
 // ─────────────────────────────────────────────────────────────────────────────
 function handleVerification(request, env) {
   const url       = new URL(request.url);
@@ -82,21 +93,14 @@ function handleVerification(request, env) {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /webhook — Incoming WhatsApp messages
 //
-// Meta wraps every event in a nested structure. This function:
-//   1. Unpacks the envelope to find the actual message
-//   2. Filters out non-message events (read receipts, delivery status, etc.)
-//   3. Handles non-text messages gracefully
-//   4. Saves the message to D1
-//   5. Sends a read receipt (human-paced feel)
-//   6. Passes the message to the bot handler
+// Receives the already-parsed body object (not the raw request).
+// Meta wraps every event in a nested structure — this unpacks it,
+// filters non-message events, and routes to the bot handler.
 // ─────────────────────────────────────────────────────────────────────────────
-async function handlePostMessage(request, env) {
-  let body;
+async function handlePostMessage(body, env) {
 
-  try {
-    body = await request.json();
-  } catch (err) {
-    console.error('[PostMessage] Failed to parse JSON body:', err.message);
+  if (!body) {
+    console.error('[PostMessage] No body received');
     return;
   }
 
@@ -113,16 +117,15 @@ async function handlePostMessage(request, env) {
   }
 
   const message   = messages[0];
-  const senderId  = message.from;  // Customer's full WhatsApp number e.g. 60123456789
-  const msgType   = message.type;  // 'text' | 'image' | 'audio' | 'document' | etc.
-  const messageId = message.id;    // Unique message ID — needed for read receipt
+  const senderId  = message.from;   // Customer's WhatsApp number e.g. 60123456789
+  const msgType   = message.type;   // 'text' | 'image' | 'audio' | 'document' etc.
+  const messageId = message.id;     // Unique message ID — needed for read receipt
 
   console.log(`[PostMessage] '${msgType}' from ${senderId}`);
 
-  // ── Non-text messages ────────────────────────────────────────────────────
-  // Politely redirect for now.
+  // ── Non-text messages — politely redirect ────────────────────────────────
   // TODO: handle 'image' (customer sends photo of cracked screen)
-  // TODO: handle 'audio' (voice note — transcribe with Whisper)
+  // TODO: handle 'audio' (voice note)
   if (msgType !== 'text') {
     await sendTextMessage(
       senderId,
@@ -137,8 +140,8 @@ async function handlePostMessage(request, env) {
   // ── Save incoming message to D1 ──────────────────────────────────────────
   await saveMessage(env.DB, {
     senderId,
-    role:      'user',
-    text:      incomingText,
+    role: 'user',
+    text: incomingText,
   });
 
   // ── Read receipt — shows customer their message was seen ─────────────────

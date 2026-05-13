@@ -107,7 +107,7 @@ async function callGemini(history, newMessage, env) {
 
   // gemini-3-flash — fast and cheap, ideal for live chat
   // Upgrade to gemini-3-pro for the daily summary cron (better long-context)
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-3.1-flash-lite'; //has more Peak RPD (500) than gemini-3-flash
   const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
   const response = await fetch(url, {

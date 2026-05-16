@@ -76,11 +76,8 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
   // ── 6. Save bot reply ─────────────────────────────────────────────────────
   await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
 
-  // ── 7. Human-paced delay — instant replies feel robotic ──────────────────
-  await delay(700);
-
-  // ── 8. Send reply to customer ─────────────────────────────────────────────
-  await sendTextMessage(senderId, aiReply, env);
+  // ── 7. Send in natural parts with human-paced delays ─────────────────────
+  await sendInParts(senderId, aiReply, env);
 }
 
 
@@ -187,7 +184,45 @@ async function handleStaffCommand(staffId, text, env) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// delay — human-paced pause before sending reply
+// sendInParts — split AI reply on double newline and send as separate messages
+//
+// Alia formats multi-part replies with blank lines (\n\n) as signals.
+// This function splits on those, then sends each chunk separately with
+// human-paced delays — feels exactly like a person typing multiple messages.
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendInParts(to, text, env) {
+  // Split on double newline — each chunk becomes a separate WhatsApp message
+  const parts = text
+    .split(/\n\n+/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+
+  // If no splits detected, just send as-is
+  if (parts.length === 1) {
+    await delay(700);
+    await sendTextMessage(to, text, env);
+    return;
+  }
+
+  // Send each part with human-paced delays
+  for (let i = 0; i < parts.length; i++) {
+    if (i === 0) {
+      // First message — short delay (feels like reading then starting to type)
+      await delay(600);
+    } else {
+      // Subsequent messages — scale delay with length
+      // ~40ms per character, capped between 800ms and 2500ms
+      const typingTime = Math.min(2500, Math.max(800, parts[i].length * 40));
+      await delay(typingTime);
+    }
+
+    await sendTextMessage(to, parts[i], env);
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// delay — Promise-based sleep utility
 // ─────────────────────────────────────────────────────────────────────────────
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));

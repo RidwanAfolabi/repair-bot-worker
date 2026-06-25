@@ -33,6 +33,9 @@ import { SYSTEM_PROMPT } from './prompt.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // handleIncomingMessage — main entry point called from index.js
+//
+// Only called with clean text at this point — all media routing happens
+// upstream in index.js before this is invoked.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function handleIncomingMessage({ senderId, incomingText, env }) {
 
@@ -51,6 +54,9 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
   }
 
   // ── 3. Fetch recent conversation history ──────────────────────────────────
+  // Last 6 messages (3 exchanges) — enough context without ballooning token cost.
+  // History includes D1 records of [Customer sent image] events so Gemini
+  // is aware that media was sent even if it couldn't read it.
   const history = await getRecentMessages(env.DB, senderId, 6);
 
   // ── 4. Call Gemini ────────────────────────────────────────────────────────
@@ -191,40 +197,62 @@ async function handleStaffCommand(staffId, text, env) {
 // sendInParts — split AI reply on double newline and send as separate messages
 //
 // Alia formats multi-part replies with blank lines (\n\n) as signals.
-// This function splits on those, then sends each chunk separately with
-// human-paced delays — feels exactly like a person typing multiple messages.
+// Each chunk is sent separately with human-paced delays — feels exactly
+// like a person reading your message, thinking, then typing a response.
+//
+// Delay strategy:
+//   First message  — 3–5 seconds (simulates reading the customer's message
+//                    and starting to compose a reply)
+//   Between parts  — scales with the length of the NEXT chunk
+//                    (~55ms per character, capped between 2s and 5s)
+//                    longer message = took longer to type
+//
+// A small random jitter (±500ms) is added to each delay so the timing
+// never feels mechanical or perfectly consistent — real humans aren't.
 // ─────────────────────────────────────────────────────────────────────────────
 async function sendInParts(to, text, env) {
-  // Split on double newline — each chunk becomes a separate WhatsApp message
   const parts = text
     .split(/\n\n+/)
     .map(p => p.trim())
     .filter(p => p.length > 0);
-
-  // If no splits detected, just send as-is
+ 
+  // Single part — pause as if reading + composing, then send
   if (parts.length === 1) {
-    await delay(700);
-    await sendTextMessage(to, text, env);
+    await delay(jitter(3500));   // ~3–4 seconds before first reply
+    await sendTextMessage(to, parts[0], env);
     return;
   }
-
-  // Send each part with human-paced delays
+ 
+  // Multiple parts — stagger with typing-speed delays between each
   for (let i = 0; i < parts.length; i++) {
     if (i === 0) {
-      // First message — short delay (feels like reading then starting to type)
-      await delay(600);
+      // First message — longer pause (read customer message → start typing)
+      await delay(jitter(3500));  // ~3–4 seconds
     } else {
-      // Subsequent messages — scale delay with length
-      // ~40ms per character, capped between 800ms and 2500ms
-      const typingTime = Math.min(2500, Math.max(800, parts[i].length * 40));
-      await delay(typingTime);
+      // Subsequent messages — scale with the length of this part
+      // ~55ms per character, capped between 2000ms and 5000ms
+      // Then add random jitter so it never feels robotic
+      const base = Math.min(5000, Math.max(2000, parts[i].length * 55));
+      await delay(jitter(base));
     }
-
+ 
     await sendTextMessage(to, parts[i], env);
   }
 }
-
-
+ 
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+// jitter — add ±500ms random variation to a base delay
+//
+// Makes timing feel natural rather than perfectly consistent.
+// Real humans don't type at a perfectly fixed pace every time.
+// ─────────────────────────────────────────────────────────────────────────────
+function jitter(baseMs) {
+  const variation = Math.floor(Math.random() * 1000) - 500; // -500 to +500ms
+  return Math.max(1500, baseMs + variation); // never go below 1500ms
+}
+ 
+ 
 // ─────────────────────────────────────────────────────────────────────────────
 // delay — Promise-based sleep utility
 // ─────────────────────────────────────────────────────────────────────────────

@@ -8,9 +8,13 @@
  *   4. Calls Gemini with system prompt + history + new message
  *   5. Detects escalation trigger in reply
  *   6. Saves reply to D1
- *   7. Sends reply to customer via WhatsApp
+ *   7. Sends reply in natural parts with human-paced delays
+ *
+ * NOTE: Media handling (images, audio, reactions, video) is now handled
+ * entirely in index.js before this function is called. By the time
+ * handleIncomingMessage() is invoked, the message is always text.
  */
-
+ 
 import {
   getRecentMessages,
   saveMessage,
@@ -116,7 +120,7 @@ async function callGemini(history, newMessage, env) {
       },
       contents,
       generationConfig: {
-        maxOutputTokens: 400,  // WhatsApp — keep it concise
+        maxOutputTokens: 500,  // // Slightly higher to allow for multi-part responses, previously 400
         temperature:     0.7,  // Natural but not unpredictable
       },
     }),

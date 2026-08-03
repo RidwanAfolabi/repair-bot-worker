@@ -507,15 +507,15 @@ function onboardPage(env) {
 </head>
 <body>
   <div class="card">
-    <div class="logo">ifix<span>express</span></div>
+    <div class="logo">iFix<span>Express</span></div>
     <div class="icon">🤖</div>
     <h1>Connect Your WhatsApp</h1>
     <p class="subtitle">
-      Link your WhatsApp Business number to Alia — our AI customer service assistant.
+      Link your WhatsApp Business number to A'aisyah - our AI customer service assistant.
       Your existing WhatsApp Business App keeps working normally.
     </p>
     <ul class="features">
-      <li>Alia handles customer enquiries 24/7 automatically</li>
+      <li>A'aisyah handles customer enquiries 24/7 automatically</li>
       <li>You keep using WhatsApp Business App as normal</li>
       <li>Escalate to your team with one tap when needed</li>
       <li>No messages lost — full conversation history maintained</li>
@@ -597,7 +597,7 @@ function successPage() {
     <span class="badge">WhatsApp Connected</span>
     <h1>You're all set!</h1>
     <p>Your WhatsApp Business number has been successfully connected to the iFix Express AI assistant.</p>
-    <p>Alia will now handle customer enquiries on your behalf — 24/7.</p>
+    <p>A'aisyah will now handle customer enquiries on your behalf — 24/7.</p>
     <a href="https://ifixexpress.com.my">← Return to iFix Express</a>
   </div>
 </body>

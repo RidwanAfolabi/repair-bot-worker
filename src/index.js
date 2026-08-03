@@ -39,7 +39,13 @@ export default {
   async fetch(request, env, ctx) {
 
     if (env.DB) {
-      await initDb(env.DB);
+      try {
+        await initDb(env.DB);
+      } catch (dbErr) {
+        // Transient D1 errors (internal error, timeout) should not crash the request.
+        // Tables almost certainly exist from a prior successful call — log and continue.
+        console.error('[Worker] initDb failed (transient D1 error):', dbErr.message);
+      }
     } else {
       console.error('[Worker] env.DB undefined — check D1 binding in wrangler.jsonc');
     }
@@ -269,16 +275,14 @@ async function handleOAuthCallback(url, env) {
       }
     }
 
-    // ── Step 6: Register the phone number for Cloud API messaging ───────────
-    // Per Meta's Tech Provider onboarding docs, this step is REQUIRED.
-    // Without it, the number is connected at account level but cannot send
-    // or receive messages through the API.
-    // The PIN becomes the two-step verification PIN for the number.
-    // We generate a random 6-digit PIN and store it alongside the number.
+    // ── Step 6: Register phone number for Cloud API messaging ───────────────
+    // Required per Meta's Tech Provider onboarding documentation.
+    // Without this the number is connected at WABA level but cannot send or
+    // receive messages via Cloud API. The PIN sets two-step verification.
     let registrationSuccess = false;
 
     if (phoneNumberId && userToken) {
-      const pin = Math.floor(100000 + Math.random() * 900000).toString(); // random 6-digit PIN
+      const pin = Math.floor(100000 + Math.random() * 900000).toString();
 
       const regRes = await fetch(
         `https://graph.facebook.com/v21.0/${phoneNumberId}/register`,
@@ -298,36 +302,22 @@ async function handleOAuthCallback(url, env) {
 
       if (regData.success) {
         registrationSuccess = true;
-        console.log(`[OAuth] ✅ Phone number registered for Cloud API — PIN set`);
-
-        // Store the PIN in D1 alongside the number record
-        if (env.DB) {
-          try {
-            await env.DB.prepare(`
-              UPDATE connected_numbers
-              SET active = 1
-              WHERE phone_number_id = ?
-            `).bind(phoneNumberId).run();
-          } catch (dbErr) {
-            console.error('[OAuth] PIN store failed:', dbErr.message);
-          }
-        }
+        console.log(`[OAuth] ✅ Phone number registered for Cloud API`);
       } else {
-        console.warn(`[OAuth] Phone number registration failed:`, JSON.stringify(regData));
-        // Not fatal — number may already be registered. Log and continue.
+        // Not always fatal — number may already be registered from a prior attempt
+        console.warn(`[OAuth] Registration response:`, JSON.stringify(regData));
       }
     }
 
     // ── Step 7: Store business token in D1 ───────────────────────────────────
-    // The business token is needed for future API calls on behalf of this business.
-    // Store it now while we have it — it does not expire like user tokens do.
+    // The business token is required for future API calls on behalf of this business.
     if (phoneNumberId && userToken && env.DB) {
       try {
         await env.DB.prepare(`
           UPDATE connected_numbers
-          SET business_token = ?
+          SET business_token = ?, phone_number = ?, waba_id = ?
           WHERE phone_number_id = ?
-        `).bind(userToken, phoneNumberId).run();
+        `).bind(userToken, phoneNumber ?? '', wabaId ?? '', phoneNumberId).run();
         console.log(`[OAuth] ✅ Business token stored in D1`);
       } catch (dbErr) {
         console.error('[OAuth] Business token store failed:', dbErr.message);
@@ -340,7 +330,7 @@ async function handleOAuthCallback(url, env) {
     console.log(`[OAuth] Business Number:  ${phoneNumber ?? 'unknown'}`);
     console.log(`[OAuth] Phone Number ID:  ${phoneNumberId ?? 'unknown'}`);
     console.log(`[OAuth] WABA ID:          ${wabaId ?? 'unknown'}`);
-    console.log(`[OAuth] Registration:     ${registrationSuccess ? '✅ success' : '⚠️ check logs'}`);
+    console.log(`[OAuth] Registration:     ${registrationSuccess ? '✅ success' : '⚠️ check logs — may need manual register'}`);
     console.log('[OAuth] Run:');
     console.log(`[OAuth]   npx wrangler secret put WA_PHONE_NUMBER_ID`);
     console.log(`[OAuth]   paste: ${phoneNumberId ?? 'see above'}`);
@@ -353,7 +343,7 @@ async function handleOAuthCallback(url, env) {
       `*Number:* ${phoneNumber ?? 'unknown'}\n` +
       `*Phone Number ID:* ${phoneNumberId ?? 'unknown'}\n` +
       `*WABA ID:* ${wabaId ?? 'unknown'}\n` +
-      `*Registration:* ${registrationSuccess ? '✅ complete' : '⚠️ may need manual step'}\n\n` +
+      `*Registration:* ${registrationSuccess ? '✅ complete' : '⚠️ check logs'}\n\n` +
       `*Developer action required:*\n` +
       `npx wrangler secret put WA_PHONE_NUMBER_ID\n` +
       `paste: ${phoneNumberId ?? 'see logs'}\n` +
@@ -405,21 +395,23 @@ async function handlePostMessage(body, env) {
   const value    = changes?.value;
   const field    = changes?.field;
 
-  // ── account_update webhook — fires when a business completes Embedded Signup
-  // Meta sends this with event=PARTNER_ADDED containing the WABA ID and
-  // business portfolio ID. This is the reliable way to capture onboarding data
-  // for the Hosted ES flow where the OAuth redirect may not always fire.
+  // ── Debug log — shows exactly what field/event Meta is sending ───────────
+  // Helps diagnose onboarding webhooks. Safe to keep in production (low noise).
+  console.log(`[Webhook] field: ${field ?? 'unknown'}, event: ${value?.event ?? 'none'}`);
+
+  // ── account_update webhook — fires when business completes Embedded Signup ─
+  // Meta sends PARTNER_ADDED containing the WABA ID when onboarding completes.
+  // Per Meta's Hosted ES documentation this is the reliable delivery mechanism.
   if (field === 'account_update') {
     const event          = value?.event;
     const wabaId         = entry?.id;
     const businessPortId = value?.biz_client_user_ns;
 
-    console.log(`[Webhook] account_update received — event: ${event}`);
+    console.log(`[Webhook] account_update — event: ${event}, WABA: ${wabaId ?? 'unknown'}`);
 
     if (event === 'PARTNER_ADDED' && wabaId) {
       console.log(`[Webhook] ✅ PARTNER_ADDED — WABA ID: ${wabaId}, Portfolio: ${businessPortId ?? 'unknown'}`);
 
-      // Store in D1 for reference
       if (env.DB) {
         try {
           await env.DB.prepare(`
@@ -433,7 +425,7 @@ async function handlePostMessage(body, env) {
             )
           `).run();
 
-          // Insert WABA-level record — Phone Number ID added later after registration
+          // Store WABA-level record — phone_number_id filled in after registration
           await env.DB.prepare(`
             INSERT INTO connected_numbers (phone_number_id, waba_id, active)
             VALUES (?, ?, 1)
@@ -441,19 +433,19 @@ async function handlePostMessage(body, env) {
               waba_id      = excluded.waba_id,
               active       = 1,
               connected_at = unixepoch()
-          `).bind(wabaId + '_waba', wabaId).run();
+          `).bind(wabaId + '_pending', wabaId).run();
 
-          console.log(`[Webhook] WABA ID stored in D1`);
+          console.log(`[Webhook] WABA ID stored in D1 as pending`);
         } catch (dbErr) {
           console.error('[Webhook] D1 store failed:', dbErr.message);
         }
       }
 
       await sendStaffAlert(
-        `🔔 *PARTNER_ADDED webhook received*\n\n` +
+        `🔔 *PARTNER_ADDED received*\n\n` +
         `*WABA ID:* ${wabaId}\n` +
         `*Portfolio ID:* ${businessPortId ?? 'unknown'}\n\n` +
-        `Onboarding is in progress. OAuth callback should complete registration.`,
+        `Onboarding webhook confirmed. OAuth callback completing registration.`,
         env
       );
     }

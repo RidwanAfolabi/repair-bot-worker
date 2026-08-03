@@ -44,17 +44,19 @@ export default {
       console.error('[Worker] env.DB undefined — check D1 binding in wrangler.jsonc');
     }
 
+    const url = new URL(request.url);
+
     // ── Kill switch ───────────────────────────────────────────────────────────
     // Set BOT_ENABLED = "false" in wrangler.jsonc vars to silence Alia instantly.
-    // Worker still receives and acknowledges all webhooks so Meta never flags
-    // the endpoint as down. Staff continue using WhatsApp Business App normally.
-    // To resume: set BOT_ENABLED = "true" and redeploy.
-    if (env.BOT_ENABLED === 'false') {
+    // Only gates incoming POST /webhook messages — GET /webhook (Meta's
+    // verification handshake) always goes through, and /onboard, /oauth/*, and /
+    // keep working. Worker still acknowledges POSTed webhooks with 200 so Meta
+    // never flags the endpoint as down. Staff continue using WhatsApp Business
+    // App normally. To resume: set BOT_ENABLED = "true" and redeploy.
+    if (url.pathname === '/webhook' && request.method === 'POST' && env.BOT_ENABLED === 'false') {
       console.log('[Worker] Bot paused — BOT_ENABLED=false in wrangler.jsonc');
       return new Response('OK', { status: 200 });
     }
-
-    const url = new URL(request.url);
 
     // ── Health check ──────────────────────────────────────────────────────────
     if (url.pathname === '/') {

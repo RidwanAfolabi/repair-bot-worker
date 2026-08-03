@@ -23,7 +23,7 @@
       "database_name": "repair-bot-db",
       "database_id": "a14d236e-5ae1-4b88-a352-d31de0c8feca"
     }
-  ]
+  ],
 
   // ── Cron trigger — uncomment after bot is stable ───────────────────────────
   // "triggers": {
@@ -49,6 +49,9 @@
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
 	 */
 	// "vars": {  "MY_VARIABLE": "production_value" }
+	"vars": {
+		"BOT_ENABLED": "false"
+	},
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

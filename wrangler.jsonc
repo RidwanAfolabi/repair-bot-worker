@@ -50,7 +50,7 @@
 	 */
 	// "vars": {  "MY_VARIABLE": "production_value" }
 	"vars": {
-		"BOT_ENABLED": "true"
+		"BOT_ENABLED": "false"
 	},
 	/**
 	 * Static Assets

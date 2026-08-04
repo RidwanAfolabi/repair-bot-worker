@@ -409,8 +409,8 @@ async function handlePostMessage(body, env) {
   // Per Meta's Hosted ES documentation this is the reliable delivery mechanism.
   if (field === 'account_update') {
     const event          = value?.event;
-    const wabaId         = entry?.id;
-    const businessPortId = value?.biz_client_user_ns;
+    const wabaId         = value?.waba_info?.waba_id ?? entry?.id;
+    const businessPortId = value?.waba_info?.owner_business_id;
 
     console.log(`[Webhook] account_update — event: ${event}, WABA: ${wabaId ?? 'unknown'}`);
 

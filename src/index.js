@@ -32,7 +32,7 @@
  */
 
 import { handleIncomingMessage } from './bot.js';
-import { initDb, saveMessage }   from './db.js';
+import { initDb, saveMessage, upsertContact, removeContact } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
 
 export default {
@@ -454,6 +454,116 @@ async function handlePostMessage(body, env) {
         env
       );
     }
+    return;
+  }
+
+  // ── smb_message_echoes — staff replied manually via the WhatsApp Business ──
+  // App (Coexistence). Mirrors those replies into D1 so Alia's context stays
+  // accurate after a !take / !done handoff. Requires this field to be
+  // subscribed in App Dashboard > WhatsApp > Configuration.
+  if (field === 'smb_message_echoes') {
+    const echoes = value?.message_echoes ?? [];
+
+    for (const echo of echoes) {
+      const customerId = echo?.to;
+      const echoType    = echo?.type;
+      if (!customerId) continue;
+
+      const text = echoType === 'text'
+        ? echo?.text?.body?.trim()
+        : `[Staff sent a ${echoType} via WhatsApp Business App]`;
+
+      if (text) {
+        await saveMessage(env.DB, { senderId: customerId, role: 'assistant', text });
+      }
+    }
+
+    console.log(`[Webhook] smb_message_echoes — mirrored ${echoes.length} staff message(s)`);
+    return;
+  }
+
+  // ── smb_app_state_sync — business customer's WhatsApp contacts ─────────────
+  // (Coexistence). Feeds a lightweight contacts table now; Phase 4 CRM builds
+  // on top of this rather than duplicating it.
+  if (field === 'smb_app_state_sync') {
+    const syncEntries = value?.state_sync ?? [];
+
+    for (const entry of syncEntries) {
+      if (entry?.type !== 'contact') continue;
+      const phoneNumber = entry?.contact?.phone_number;
+      if (!phoneNumber) continue;
+
+      if (entry.action === 'remove') {
+        await removeContact(env.DB, phoneNumber);
+      } else {
+        await upsertContact(env.DB, {
+          phoneNumber,
+          fullName:  entry.contact?.full_name,
+          firstName: entry.contact?.first_name,
+        });
+      }
+    }
+
+    console.log(`[Webhook] smb_app_state_sync — processed ${syncEntries.length} contact entr${syncEntries.length === 1 ? 'y' : 'ies'}`);
+    return;
+  }
+
+  // ── history — one-time backfill of WhatsApp Business App chat history ──────
+  // (Coexistence). Triggered once by the smb_app_data 'history' sync call
+  // after onboarding — see Document 4's 24-hour window requirement.
+  // Two payload shapes share this field:
+  //   Shape 1 — value.history[]: chunked thread history, or a decline/error
+  //   Shape 2 — value.messages[]: a standalone media asset filling in an
+  //             earlier media_placeholder from Shape 1 (NOT yet matched back
+  //             to its placeholder row — logged only, known gap for now)
+  if (field === 'history') {
+    const historyChunks = value?.history;
+
+    if (historyChunks) {
+      for (const chunk of historyChunks) {
+        if (chunk?.errors) {
+          console.log(`[Webhook] history — sync declined or errored: ${JSON.stringify(chunk.errors)}`);
+          continue;
+        }
+
+        const { phase, chunk_order, progress } = chunk?.metadata ?? {};
+        console.log(`[Webhook] history — phase ${phase}, chunk ${chunk_order}, ${progress}% complete`);
+
+        for (const thread of chunk?.threads ?? []) {
+          const customerId = thread?.id;
+          if (!customerId) continue;
+
+          for (const msg of thread?.messages ?? []) {
+            if (msg?.type === 'media_placeholder') {
+              console.log(`[Webhook] history — media placeholder ${msg.id}, contents pending in a separate webhook`);
+              continue;
+            }
+
+            const role = msg?.from === customerId ? 'user' : 'assistant';
+            const text = msg?.type === 'text'
+              ? msg?.text?.body?.trim()
+              : `[${msg?.type} message from history sync]`;
+
+            if (text) {
+              await saveMessage(env.DB, {
+                senderId:  customerId,
+                role,
+                text,
+                timestamp: msg?.timestamp ? Number(msg.timestamp) : undefined,
+              });
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    const mediaMessages = value?.messages;
+    if (mediaMessages) {
+      console.log(`[Webhook] history — ${mediaMessages.length} media asset detail(s) received (unmatched to placeholder — known gap)`);
+      return;
+    }
+
     return;
   }
 

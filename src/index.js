@@ -70,12 +70,12 @@ export default {
     }
 
     // ── Embedded Signup OAuth callback ────────────────────────────────────────
-    // Meta redirects here after a business completes the Embedded Signup flow.
-    // Receives an authorisation code, exchanges it for a permanent access token,
-    // then subscribes the new WABA to our webhook so messages flow through.
-    if (url.pathname === '/oauth/callback' && request.method === 'GET') {
-      return handleOAuthCallback(url, env);
-    }
+    // DISABLED — this implements a code+redirect_uri exchange that doesn't match
+    // Hosted ES's actual delivery mechanism (HMAC-based, via account_update
+    // webhook). Confirmed never fires. Commented out pending removal.
+    // if (url.pathname === '/oauth/callback' && request.method === 'GET') {
+    //   return handleOAuthCallback(url, env);
+    // }
 
     // ── Onboarding success page ───────────────────────────────────────────────
     if (url.pathname === '/oauth/success' && request.method === 'GET') {
@@ -398,6 +398,11 @@ async function handlePostMessage(body, env) {
   // ── Debug log — shows exactly what field/event Meta is sending ───────────
   // Helps diagnose onboarding webhooks. Safe to keep in production (low noise).
   console.log(`[Webhook] field: ${field ?? 'unknown'}, event: ${value?.event ?? 'none'}`);
+
+  // ── Full raw payload dump — TEMPORARY, remove once portfolio ID field is found ──
+  if (field === 'account_update') {
+    console.log(`[Webhook] RAW account_update payload: ${JSON.stringify(body)}`);
+  }
 
   // ── account_update webhook — fires when business completes Embedded Signup ─
   // Meta sends PARTNER_ADDED containing the WABA ID when onboarding completes.

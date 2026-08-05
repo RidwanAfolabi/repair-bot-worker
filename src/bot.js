@@ -5,7 +5,7 @@
  *   1. Checks for staff commands (!take, !done)
  *   2. Checks if sender is escalated — stays silent if so
  *   3. Fetches recent conversation history from D1
- *   4. Calls Gemini with system prompt + history + new message
+ *   4. Calls the configured LLM (see llm.js) with history + new message
  *   5. Detects escalation trigger in reply
  *   6. Saves reply to D1
  *   7. Sends reply in natural parts with human-paced delays
@@ -28,7 +28,7 @@ import {
   sendStaffAlert,
 } from './whatsapp.js';
 
-import { SYSTEM_PROMPT } from './prompt.js';
+import { generateReply } from './llm.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,12 +59,12 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
   // is aware that media was sent even if it couldn't read it.
   const history = await getRecentMessages(env.DB, senderId, 6);
 
-  // ── 4. Call Gemini ────────────────────────────────────────────────────────
+  // ── 4. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
   let aiReply;
   try {
-    aiReply = await callGemini(history, incomingText, env);
+    aiReply = await generateReply(history, incomingText, env);
   } catch (err) {
-    console.error('[Bot] Gemini error:', err.message);
+    console.error(`[Bot] LLM error (${env.LLM_PROVIDER ?? 'gemini'}):`, err.message);
     aiReply = 'Maaf, ada gangguan teknikal sebentar. Team kami akan balas anda tidak lama lagi! 🙏';
   }
 
@@ -88,63 +88,6 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
 
   // ── 7. Send in natural parts with human-paced delays ─────────────────────
   await sendInParts(senderId, aiReply, env);
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// callGemini — call Google Gemini 1.5 Flash
-//
-// Key differences from Claude/OpenAI format:
-//   - 'assistant' role must be sent as 'model'
-//   - System prompt goes in systemInstruction, not in messages array
-//   - Response text is nested at candidates[0].content.parts[0].text
-// ─────────────────────────────────────────────────────────────────────────────
-async function callGemini(history, newMessage, env) {
-
-  // Convert history to Gemini format — 'assistant' → 'model'
-  const geminiHistory = history.map(m => ({
-    role:  m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.text }],
-  }));
-
-  const contents = [
-    ...geminiHistory,
-    { role: 'user', parts: [{ text: newMessage }] },
-  ];
-
-  // gemini-3-flash — fast and cheap, ideal for live chat
-  // Upgrade to gemini-3-pro for the daily summary cron (better long-context)
-  const model = 'gemini-3.1-flash-lite'; //has more Peak RPD (500) than gemini-3-flash
-  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-
-  const response = await fetch(url, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
-      },
-      contents,
-      generationConfig: {
-        maxOutputTokens: 500,  // // Slightly higher to allow for multi-part responses, previously 400
-        temperature:     0.7,  // Natural but not unpredictable
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Gemini API ${response.status}: ${err}`);
-  }
-
-  const data = await response.json();
-
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Gemini returned empty response — check API key and quota');
-  }
-
-  return text.trim();
 }
 
 

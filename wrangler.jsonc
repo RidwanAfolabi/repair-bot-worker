@@ -50,10 +50,19 @@
 	 */
 	// "vars": {  "MY_VARIABLE": "production_value" }
 	"vars": {
-		"BOT_ENABLED": "true",
-		"TEST_ALLOWLIST": "601123139568,2347015759242",
-		"MUTE_WINDOW_MINUTES": "75"
-	},
+    // Managed directly in Cloudflare dashboard (Workers & Pages >
+    // repair-bot-worker > Settings > Variables and Secrets), NOT here —
+    // a var declared live in this block gets reset to this file's value
+    // on every `wrangler deploy`, silently overwriting any dashboard edit.
+    // Kept below, commented, purely as a reference for current/default values.
+
+    // "BOT_ENABLED": "true",
+    // "TEST_ALLOWLIST": "<your real test numbers, comma-separated, no spaces>",
+    // "MUTE_WINDOW_MINUTES": "75",
+    // "LLM_PROVIDER": "gemini",
+    // "GEMINI_MODEL": "gemini-3.1-flash-lite",
+    // "CLAUDE_MODEL": "claude-sonnet-5"
+},
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

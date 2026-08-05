@@ -50,9 +50,7 @@
 	 */
 	// "vars": {  "MY_VARIABLE": "production_value" }
 	"vars": {
-		"BOT_ENABLED": "true",
-		"TEST_ALLOWLIST": "601xxxxxxxx,601yyyyyyyy",
-		"MUTE_WINDOW_MINUTES": "75"
+		"BOT_ENABLED": "false"
 	},
 	/**
 	 * Static Assets

@@ -31,8 +31,8 @@
  *   META_APP_SECRET    — Your Meta App Secret (from App Dashboard → Settings → Basic)
  */
 
-import { handleIncomingMessage } from './bot.js';
-import { initDb, saveMessage, upsertContact, removeContact } from './db.js';
+import { handleIncomingMessage, handleStaffCommand } from './bot.js';
+import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
 
 export default {
@@ -459,26 +459,46 @@ async function handlePostMessage(body, env) {
 
   // ── smb_message_echoes — staff replied manually via the WhatsApp Business ──
   // App (Coexistence). Mirrors those replies into D1 so Alia's context stays
-  // accurate after a !take / !done handoff. Requires this field to be
-  // subscribed in App Dashboard > WhatsApp > Configuration.
+  // accurate, and refreshes the auto-mute window so the bot doesn't jump back
+  // in mid-conversation. Requires this field to be subscribed in
+  // App Dashboard > WhatsApp > Configuration.
+  //
+  // Self-chat (from === to, staff messaging their own number) is routed
+  // through the shared staff-command parser instead — lets !take/!done be
+  // sent as a note-to-self inside WhatsApp Business App, no separate number
+  // needed. Non-text self-chat notes are silently ignored (logged only) —
+  // there is no delivery target that makes sense for a photo sent to self.
   if (field === 'smb_message_echoes') {
     const echoes = value?.message_echoes ?? [];
 
     for (const echo of echoes) {
-      const customerId = echo?.to;
-      const echoType    = echo?.type;
-      if (!customerId) continue;
+      const from     = echo?.from;
+      const to       = echo?.to;
+      const echoType = echo?.type;
+      if (!from || !to) continue;
+
+      if (from === to) {
+        const text = echoType === 'text' ? echo?.text?.body?.trim() : null;
+        if (text) {
+          const handled = await handleStaffCommand(text, env, env.STAFF_WA_NUMBER);
+          if (!handled) {
+            console.log(`[Webhook] smb_message_echoes — self-chat note ignored: "${text}"`);
+          }
+        }
+        continue;
+      }
 
       const text = echoType === 'text'
         ? echo?.text?.body?.trim()
         : `[Staff sent a ${echoType} via WhatsApp Business App]`;
 
       if (text) {
-        await saveMessage(env.DB, { senderId: customerId, role: 'assistant', text });
+        await saveMessage(env.DB, { senderId: to, role: 'assistant', text });
+        await refreshAutoMute(env.DB, to);
       }
     }
 
-    console.log(`[Webhook] smb_message_echoes — mirrored ${echoes.length} staff message(s)`);
+    console.log(`[Webhook] smb_message_echoes — processed ${echoes.length} echo(es)`);
     return;
   }
 

@@ -51,7 +51,7 @@
 	// "vars": {  "MY_VARIABLE": "production_value" }
 	"vars": {
 		"BOT_ENABLED": "true",
-		"TEST_ALLOWLIST": "601xxxxxxxx,601yyyyyyyy",
+		"TEST_ALLOWLIST": "601123139568,2347015759242",
 		"MUTE_WINDOW_MINUTES": "75"
 	},
 	/**

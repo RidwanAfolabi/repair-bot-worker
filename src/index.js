@@ -604,6 +604,22 @@ async function handlePostMessage(body, env) {
 
   console.log(`[PostMessage] '${msgType}' from ${senderId}`);
 
+  // ── Test allowlist ─────────────────────────────────────────────────────────
+  // Set TEST_ALLOWLIST in wrangler.jsonc vars to a comma-separated list of
+  // phone numbers to restrict customer replies to those numbers only — staff
+  // still handle everyone else manually via WhatsApp Business App. Set to "*"
+  // to disable the restriction and reply to all customers. Staff messages
+  // (STAFF_WA_NUMBER) always bypass this check.
+  if (senderId !== env.STAFF_WA_NUMBER) {
+    if (env.TEST_ALLOWLIST !== '*') {
+      const allowed = (env.TEST_ALLOWLIST ?? '').split(',').map(n => n.trim()).filter(Boolean);
+      if (!allowed.includes(senderId)) {
+        console.log(`[PostMessage] ${senderId} not in TEST_ALLOWLIST — skipping, manager handles via app`);
+        return;
+      }
+    }
+  }
+
   // ── Silently ignored types ────────────────────────────────────────────────
   if (msgType === 'reaction' || msgType === 'sticker') {
     console.log(`[PostMessage] Ignoring '${msgType}' from ${senderId} — no reply`);

@@ -51,7 +51,12 @@ export async function initDb(db) {
     `),
 
     // Escalation state per customer
-    // When escalated = 1, the bot stays silent for that sender_id
+    // escalated=1 means the bot stays silent for that sender_id.
+    // mute_type distinguishes WHY:
+    //   'auto'   — staff replied manually via WhatsApp Business App (Coexistence
+    //              smb_message_echoes). Expires after MUTE_WINDOW_MINUTES of
+    //              staff inactivity — bot resumes automatically, no action needed.
+    //   'manual' — staff explicitly sent !take. Never expires — only !done clears it.
     // (Phase A would have added alert_sent, alert_sent_at, alert_retries here
     // — see suspended block near the bottom of this file)
     db.prepare(`
@@ -59,7 +64,8 @@ export async function initDb(db) {
         sender_id    TEXT    PRIMARY KEY,
         escalated    INTEGER NOT NULL DEFAULT 0,
         escalated_at INTEGER,
-        resolved_at  INTEGER
+        resolved_at  INTEGER,
+        mute_type    TEXT    NOT NULL DEFAULT 'manual'
       )
     `),
 
@@ -75,6 +81,14 @@ export async function initDb(db) {
     `),
 
   ]);
+
+  // Active migration — adds mute_type to escalations tables created before
+  // this column existed. Safe to repeat; fails silently if already present.
+  try {
+    await db.prepare(`ALTER TABLE escalations ADD COLUMN mute_type TEXT NOT NULL DEFAULT 'manual'`).run();
+  } catch {
+    // Column already exists — safe to ignore
+  }
 
   /* ── SUSPENDED — Phase A escalations ALTER TABLE migration ────────────────
   const alterQueries = [
@@ -140,29 +154,62 @@ export async function getRecentMessages(db, senderId, limit = 6) {
 // isEscalated — check if a sender has been escalated to a human
 //
 // Bot stays silent when this returns true.
+// 'manual' mutes (staff sent !take) never expire on their own — only !done
+// clears them. 'auto' mutes (staff replied via WhatsApp Business App) expire
+// after MUTE_WINDOW_MINUTES of staff inactivity — bot resumes automatically.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function isEscalated(db, senderId) {
+export async function isEscalated(db, senderId, env) {
   const row = await db
-    .prepare(`SELECT escalated FROM escalations WHERE sender_id = ?`)
+    .prepare(`SELECT escalated, escalated_at, mute_type FROM escalations WHERE sender_id = ?`)
     .bind(senderId)
     .first();
 
-  return row?.escalated === 1;
+  if (!row || row.escalated !== 1) return false;
+  if (row.mute_type === 'manual') return true;
+
+  const windowMinutes = Number(env?.MUTE_WINDOW_MINUTES ?? 75);
+  const windowSeconds = windowMinutes * 60;
+  const nowSeconds     = Math.floor(Date.now() / 1000);
+
+  return (nowSeconds - row.escalated_at) < windowSeconds;
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// setEscalated — mark a sender as escalated (bot goes silent)
+// setManualMute — staff explicitly sent !take, or Alia's own escalation
+// trigger fired. Never expires — only resolveEscalation (!done) clears it.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function setEscalated(db, senderId) {
+export async function setManualMute(db, senderId) {
   await db
     .prepare(`
-      INSERT INTO escalations (sender_id, escalated, escalated_at)
-      VALUES (?, 1, unixepoch())
+      INSERT INTO escalations (sender_id, escalated, escalated_at, mute_type)
+      VALUES (?, 1, unixepoch(), 'manual')
       ON CONFLICT(sender_id) DO UPDATE SET
         escalated    = 1,
         escalated_at = unixepoch(),
-        resolved_at  = NULL
+        resolved_at  = NULL,
+        mute_type    = 'manual'
+    `)
+    .bind(senderId)
+    .run();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// refreshAutoMute — staff replied manually via WhatsApp Business App.
+// Resets the mute window unless the customer is already under a 'manual'
+// mute, which always takes priority and must not be downgraded to 'auto'.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function refreshAutoMute(db, senderId) {
+  await db
+    .prepare(`
+      INSERT INTO escalations (sender_id, escalated, escalated_at, mute_type)
+      VALUES (?, 1, unixepoch(), 'auto')
+      ON CONFLICT(sender_id) DO UPDATE SET
+        escalated    = 1,
+        escalated_at = unixepoch(),
+        resolved_at  = NULL,
+        mute_type    = CASE WHEN escalations.mute_type = 'manual' THEN 'manual' ELSE 'auto' END
     `)
     .bind(senderId)
     .run();

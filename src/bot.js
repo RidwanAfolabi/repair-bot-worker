@@ -19,7 +19,7 @@ import {
   getRecentMessages,
   saveMessage,
   isEscalated,
-  setEscalated,
+  setManualMute,
   resolveEscalation,
 } from './db.js';
 
@@ -41,13 +41,13 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
 
   // ── 1. Staff commands — from manager's personal number ───────────────────
   if (senderId === env.STAFF_WA_NUMBER) {
-    await handleStaffCommand(senderId, incomingText, env);
+    await handleStaffCommand(incomingText, env, senderId);
     return;
   }
 
   // ── 2. Check escalation state ─────────────────────────────────────────────
   // Bot stays completely silent — staff are handling via WhatsApp Business App
-  const escalated = await isEscalated(env.DB, senderId);
+  const escalated = await isEscalated(env.DB, senderId, env);
   if (escalated) {
     console.log(`[Bot] ${senderId} is escalated — staying silent`);
     return;
@@ -70,7 +70,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
 
   // ── 5. Detect escalation trigger in reply ────────────────────────────────
   if (shouldEscalate(aiReply)) {
-    await setEscalated(env.DB, senderId);
+    await setManualMute(env.DB, senderId);
     await sendStaffAlert(
       `🚨 *Customer needs attention*\n\n` +
       `*Number:* +${senderId}\n` +
@@ -158,38 +158,44 @@ function shouldEscalate(reply) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// handleStaffCommand — commands received from STAFF_WA_NUMBER
+// handleStaffCommand — shared parser for staff commands, called from both
+// STAFF_WA_NUMBER text messages (bot.js) and smb_message_echoes self-chat
+// notes (index.js). replyTo defaults to STAFF_WA_NUMBER but is decoupled
+// from the command's source so both channels can confirm to the same place.
 //
 // !take 60123456789  — manually pause bot for a customer
 // !done 60123456789  — resume bot for a customer after staff handled them
+//
+// Returns true if the text was a recognised command, false otherwise.
 // ─────────────────────────────────────────────────────────────────────────────
-async function handleStaffCommand(staffId, text, env) {
+export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBER) {
   const parts  = text.trim().split(/\s+/);
   const cmd    = parts[0]?.toLowerCase();
   const target = parts[1];
 
   if (cmd === '!take' && target) {
-    await setEscalated(env.DB, target);
+    await setManualMute(env.DB, target);
     await sendTextMessage(
-      staffId,
-      `✅ Bot paused for +${target}.\nOpen WhatsApp Business App to reply to them directly.`,
+      replyTo,
+      `✅ Bot paused for +${target} (stays off until !done — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
       env
     );
-    return;
+    return true;
   }
 
   if (cmd === '!done' && target) {
     await resolveEscalation(env.DB, target);
-    await sendTextMessage(staffId, `✅ Bot resumed for +${target}.`, env);
+    await sendTextMessage(replyTo, `✅ Bot resumed for +${target}.`, env);
     await sendTextMessage(
       target,
       'Terima kasih kerana menghubungi iFix Express! Ada lagi yang boleh kami bantu? 😊',
       env
     );
-    return;
+    return true;
   }
 
-  console.log(`[Bot] Unrecognised staff command from ${staffId}: ${text}`);
+  console.log(`[Bot] Unrecognised staff command: "${text}"`);
+  return false;
 }
 
 
@@ -215,14 +221,27 @@ async function sendInParts(to, text, env) {
     .split(/\n\n+/)
     .map(p => p.trim())
     .filter(p => p.length > 0);
- 
+
+  // Guards against the customer getting muted (staff took over) mid-send —
+  // e.g. staff replies via WhatsApp Business App while Alia is still
+  // drip-feeding a multi-part reply. Re-checks escalation state right
+  // before each part goes out and drops anything still queued.
+  const sendIfStillActive = async (part) => {
+    if (await isEscalated(env.DB, to, env)) {
+      console.log(`[Bot] ${to} got muted mid-send — dropping remaining reply`);
+      return false;
+    }
+    await sendTextMessage(to, part, env);
+    return true;
+  };
+
   // Single part — pause as if reading + composing, then send
   if (parts.length === 1) {
     await delay(jitter(3500));   // ~3–4 seconds before first reply
-    await sendTextMessage(to, parts[0], env);
+    await sendIfStillActive(parts[0]);
     return;
   }
- 
+
   // Multiple parts — stagger with typing-speed delays between each
   for (let i = 0; i < parts.length; i++) {
     if (i === 0) {
@@ -235,8 +254,9 @@ async function sendInParts(to, text, env) {
       const base = Math.min(5000, Math.max(2000, parts[i].length * 55));
       await delay(jitter(base));
     }
- 
-    await sendTextMessage(to, parts[i], env);
+
+    const stillActive = await sendIfStillActive(parts[i]);
+    if (!stillActive) break;
   }
 }
  

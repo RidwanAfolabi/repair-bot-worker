@@ -13,10 +13,16 @@
  * these are the glue between an incoming WhatsApp message and what gets fed
  * to the LLM (see bot.js step 4).
  *
- * Three-tier lookup, most to least specific:
+ * Lookup tiers, most to least specific:
  *   1. exact     — Category (brand + part-type) AND Description (model) both
- *                  match. Safe to quote as a confirmed price.
- *   2. category  — Category matches (brand + part-type), but no specific
+ *                  match, and the row has a real price (> 0). Safe to quote
+ *                  as a confirmed price.
+ *   2. unpriced  — same exact Category+Description match as above, but the
+ *                  row's price is 0 — a placeholder for "not yet priced,"
+ *                  not "free" (confirmed from real sheet data). The repair
+ *                  IS offered, but no number exists to quote — must not be
+ *                  stated as RM0 or guessed.
+ *   3. category  — Category matches (brand + part-type), but no specific
  *                  model match in Description. Returns everything in that
  *                  category as CONTEXT ONLY — per the system prompt's
  *                  "when you are not sure" rule, none of these should be
@@ -24,7 +30,7 @@
  *                  say something like "we have pricing for related Samsung
  *                  screens, let me confirm the exact one for your model"
  *                  rather than a bare "let me check."
- *   3. none      — nothing matched at all. Genuinely unknown, escalate.
+ *   4. none      — nothing matched at all. Genuinely unknown, escalate.
  *
  * Sheet columns (confirmed from real export): Code, Category, Description, Price
  * Category format: "NN.0 [TYPE] [BRAND]" e.g. "01.0 LCD IPHONE", "25.0 SERVICES"
@@ -163,6 +169,15 @@ export function formatPricingContext(matchResult) {
     row => `- ${row.description} (${row.category}): RM${row.price}`
   );
 
+  if (matchResult.tier === 'unpriced') {
+    const row = matchResult.rows[0];
+    return [
+      '## LIVE PRICE LOOKUP RESULT — MATCHED, BUT NOT YET PRICED',
+      '',
+      `Exact match found in the catalog: ${row.description} (${row.category}). This repair IS offered — do not tell the customer it's unavailable. However, no price has been entered for it yet, so you do not have a real number to quote. Do not state RM0 and do not make up a price. Follow the escalation approach to confirm the exact price.`,
+    ].join('\n');
+  }
+
   if (matchResult.tier === 'exact') {
     return [
       '## LIVE PRICE LOOKUP RESULT — CONFIRMED MATCH',
@@ -200,6 +215,14 @@ export function findPricing({ brand, model, damageType }, rows) {
   });
 
   if (exact) {
+    // Price of 0 means "not yet priced," not "free" — real sheet rows can
+    // sit at 0 before someone fills in the actual number. Must not be
+    // quoted as RM0, but also isn't a true "no match" — the item genuinely
+    // exists in the catalog, so A'aisyah should say the repair is offered
+    // while still deferring the actual price.
+    if (exact.price === 0) {
+      return { tier: 'unpriced', rows: [exact] };
+    }
     return { tier: 'exact', rows: [exact] };
   }
 

@@ -446,7 +446,7 @@ async function handlePostMessage(body, env) {
   }
 
   // ── smb_message_echoes — staff replied manually via the WhatsApp Business ──
-  // App (Coexistence). Mirrors those replies into D1 so Alia's context stays
+  // App (Coexistence). Mirrors those replies into D1 so A'aisyah's context stays
   // accurate, and refreshes the auto-mute window so the bot doesn't jump back
   // in mid-conversation. Requires this field to be subscribed in
   // App Dashboard > WhatsApp > Configuration.
@@ -576,7 +576,7 @@ async function handlePostMessage(body, env) {
   }
 
   // ── Kill switch ───────────────────────────────────────────────────────────
-  // Set BOT_ENABLED = "false" in wrangler.jsonc vars to silence Alia's replies
+  // Set BOT_ENABLED = "false" in wrangler.jsonc vars to silence A'aisyah's replies
   // to customers instantly. Scoped to this point only — every Coexistence
   // handler above (account_update, smb_message_echoes, smb_app_state_sync,
   // history) has already returned by now, so the kill switch has no effect on
@@ -695,7 +695,7 @@ async function handlePostMessage(body, env) {
 
     await sendTextMessage(
       senderId,
-      'Terima kasih! Voice note diterima. Buat masa ni saya belum boleh dengar audio, tapi team kami akan get back to you ya 😊\n\nKalau senang, boleh taip soalan you — lagi cepat Alia boleh bantu!',
+      'Terima kasih! Voice note diterima. Buat masa ni saya belum boleh dengar audio, tapi team kami akan get back to you ya 😊\n\nKalau senang, boleh taip soalan you — lagi cepat A\'aisyah boleh bantu!',
       env
     );
 

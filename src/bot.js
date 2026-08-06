@@ -92,7 +92,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// shouldEscalate — detect escalation phrase in Alia's reply
+// shouldEscalate — detect escalation phrase in A'aisyah's reply
 // Must match the exact phrase defined in SYSTEM_PROMPT
 // ─────────────────────────────────────────────────────────────────────────────
 function shouldEscalate(reply) {
@@ -145,7 +145,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 // ─────────────────────────────────────────────────────────────────────────────
 // sendInParts — split AI reply on double newline and send as separate messages
 //
-// Alia formats multi-part replies with blank lines (\n\n) as signals.
+// A'aisyah formats multi-part replies with blank lines (\n\n) as signals.
 // Each chunk is sent separately with human-paced delays — feels exactly
 // like a person reading your message, thinking, then typing a response.
 //
@@ -166,7 +166,7 @@ async function sendInParts(to, text, env) {
     .filter(p => p.length > 0);
 
   // Guards against the customer getting muted (staff took over) mid-send —
-  // e.g. staff replies via WhatsApp Business App while Alia is still
+  // e.g. staff replies via WhatsApp Business App while A'aisyah is still
   // drip-feeding a multi-part reply. Re-checks escalation state right
   // before each part goes out and drops anything still queued.
   const sendIfStillActive = async (part) => {

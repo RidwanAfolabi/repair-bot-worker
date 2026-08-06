@@ -1,10 +1,17 @@
 /**
  * pricing.js — matches customer enquiries against the iFix Express price list
  *
- * Independent of however the sheet data actually gets fetched (Google Sheets
- * API + service account — still pending account setup). This module only
- * cares about: given raw CSV text and a customer's brand/model/damage type,
- * find the right rows.
+ * Independent of however the sheet data actually gets fetched — parseSheet()
+ * for a raw CSV export, rowsFromApiValues() for the live Google Sheets API
+ * response used by googleSheets.js. Either way this module only cares about:
+ * given rows in the shape { code, category, description, price } and a
+ * customer's brand/model/damage type, find the right ones.
+ *
+ * parseStructuredDeviceReply() extracts that brand/model/damage type from a
+ * customer's reply to the prompt's structured device-details template, and
+ * formatPricingContext() turns a match back into prompt text — together
+ * these are the glue between an incoming WhatsApp message and what gets fed
+ * to the LLM (see bot.js step 4).
  *
  * Three-tier lookup, most to least specific:
  *   1. exact     — Category (brand + part-type) AND Description (model) both
@@ -66,6 +73,116 @@ export function parseSheet(csvText) {
     price:       Number(cols[3]?.trim() ?? 0),
   }));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rowsFromApiValues — convert Google Sheets API `values` (array of arrays,
+// from spreadsheets.values.get) into the same row shape parseSheet() builds
+// from raw CSV. The API already splits cells for us — no CSV escaping to
+// worry about — so this is just column mapping plus dropping the header row.
+// ─────────────────────────────────────────────────────────────────────────────
+export function rowsFromApiValues(values) {
+  if (!Array.isArray(values) || values.length === 0) return [];
+
+  const [, ...dataRows] = values; // drop header row
+  return dataRows
+    .filter(cols => Array.isArray(cols) && cols.some(c => String(c ?? '').trim() !== ''))
+    .map(cols => ({
+      code:        cols[0] != null ? String(cols[0]).trim() : undefined,
+      category:    cols[1] != null ? String(cols[1]).trim() : undefined,
+      description: cols[2] != null ? String(cols[2]).trim() : undefined,
+      price:       Number(cols[3] ?? 0),
+    }));
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseStructuredDeviceReply — extract brand/model/damageType from a
+// customer's reply to the "ASKING FOR DEVICE DETAILS" template in prompt.js:
+//
+//   1. Jenama handphone: Samsung
+//   2. Model handphone: Note 20 Ultra
+//   3. Jenis kerosakkan: Screen
+//
+// Only reliably parses the BM template — it's the one fixed format everyone
+// (manager and A'aisyah) actually uses verbatim. The English adaptation is
+// deliberately NOT a fixed string in the prompt (customers phrase it however
+// they like), so it can't be pattern-matched here; a customer replying in
+// English simply won't match and pricing lookup is skipped for that message
+// — the LLM still replies normally, just without live pricing context.
+//
+// Line-by-line matching means extra text before/after the three lines (a
+// greeting, a follow-up question) is harmless — those lines just don't match
+// any pattern and are ignored. Returns null unless all three fields are
+// found; a partial match is treated as "not enough to look up" rather than
+// guessing at what's missing.
+// ─────────────────────────────────────────────────────────────────────────────
+const DEVICE_FIELD_PATTERNS = {
+  brand:      /jenama\s*handphone\s*:\s*(.+)/i,
+  model:      /model\s*handphone\s*:\s*(.+)/i,
+  damageType: /jenis\s*kerosak?kan\s*:\s*(.+)/i,
+};
+
+export function parseStructuredDeviceReply(text) {
+  if (!text) return null;
+
+  const result = {};
+
+  for (const line of text.split(/\r?\n/)) {
+    for (const [field, pattern] of Object.entries(DEVICE_FIELD_PATTERNS)) {
+      const match = line.match(pattern);
+      if (match) {
+        result[field] = match[1].trim();
+      }
+    }
+  }
+
+  if (result.brand && result.model && result.damageType) {
+    return result;
+  }
+
+  return null;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// formatPricingContext — turn a findPricing() result into a block of text
+// appended to the system prompt (see prompt.js buildSystemPrompt).
+//
+// Ties directly to the "## WHEN YOU ARE NOT SURE" prompt rule: 'exact' rows
+// are explicitly safe to quote, 'category' rows are explicitly NOT — they're
+// framed as context for a more informed hand-off, never as a price. 'none'
+// (or no match object at all) produces no block; the LLM falls back to its
+// normal "don't guess, escalate" behaviour with no live data to lean on.
+// ─────────────────────────────────────────────────────────────────────────────
+export function formatPricingContext(matchResult) {
+  if (!matchResult || matchResult.tier === 'none' || matchResult.rows.length === 0) {
+    return '';
+  }
+
+  const lines = matchResult.rows.map(
+    row => `- ${row.description} (${row.category}): RM${row.price}`
+  );
+
+  if (matchResult.tier === 'exact') {
+    return [
+      '## LIVE PRICE LOOKUP RESULT — CONFIRMED MATCH',
+      '',
+      "The following price was found in the live price list for this customer's exact device and damage type. You may quote this price directly.",
+      '',
+      ...lines,
+    ].join('\n');
+  }
+
+  // tier === 'category'
+  return [
+    '## LIVE PRICE LOOKUP RESULT — RELATED ITEMS ONLY, NOT A CONFIRMED MATCH',
+    '',
+    "No exact match was found for this customer's specific model. The items below are from the same brand and repair category and are for CONTEXT ONLY — do not quote any of these as the customer's price. Let them know you have related pricing and will confirm the exact figure for their model, following the escalation approach for anything uncertain.",
+    '',
+    ...lines,
+  ].join('\n');
+}
+
 
 export function findPricing({ brand, model, damageType }, rows) {
   const brandNorm = normalize(brand);

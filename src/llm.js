@@ -92,12 +92,33 @@ async function callGemini(history, newMessage, env) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// callClaude — call Anthropic's Messages API
+// callClaude — Anthropic Claude
 //
-// Key differences from Gemini format:
-//   - roles are already 'user' / 'assistant' — no remapping needed
-//   - system prompt is a top-level `system` field, not part of messages
-//   - Response text is nested at content[0].text
+// Key differences from Gemini's format, handled here so the rest of the
+// codebase doesn't need to care:
+//   - System prompt is a top-level `system` param, not part of `messages`
+//   - 'assistant' role stays as-is (D1 already stores it this way — no
+//     mapping needed, unlike Gemini's 'model' rename)
+//   - max_tokens is required, not optional
+//   - Response text is at content[0].text (content is an array of blocks)
+//
+// NOTE — Claude Sonnet 5 (and Opus 4.7+) no longer accept temperature/top_p/
+// top_k at all; sending any of them, even at "default" values, returns a 400.
+// Deliberately not sent here. Tone is controlled entirely through the system
+// prompt instead.
+//
+// NOTE — Sonnet 5 runs with adaptive thinking ON by default, and max_tokens
+// caps thinking + reply combined. Explicitly disabled below — this bot is
+// straightforward instruction-following (branch routing, pricing, escalation
+// trigger), not a task that benefits from extended reasoning, and leaving
+// thinking on risks eating into the 500-token reply budget unpredictably.
+//
+// Requires the ANTHROPIC_API_KEY secret:
+//   npx wrangler secret put ANTHROPIC_API_KEY
+//
+// Model default is claude-sonnet-5 — a quality-first pick for comparing
+// against Gemini's output. Cheaper/faster alternative: claude-haiku-4-5-20251001.
+// Override via env.CLAUDE_MODEL without touching this file.
 // ─────────────────────────────────────────────────────────────────────────────
 async function callClaude(history, newMessage, env) {
   const messages = [
@@ -116,10 +137,10 @@ async function callClaude(history, newMessage, env) {
     },
     body: JSON.stringify({
       model,
-      system:      SYSTEM_PROMPT,
+      system:     SYSTEM_PROMPT,
       messages,
-      max_tokens:  500,
-      temperature: 0.7,
+      max_tokens: 500,
+      thinking:   { type: 'disabled' },
     }),
   });
 

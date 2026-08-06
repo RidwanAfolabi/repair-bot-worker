@@ -2,10 +2,11 @@
  * db.js — Cloudflare D1 database helpers
  *
  * Tables:
- *   conversations — every message in and out, per customer
- *   intakes       — completed repair booking details
- *   escalations   — tracks which customers have been escalated to staff
- *   wa_contacts   — Coexistence: contacts synced from the WhatsApp Business app
+ *   conversations   — every message in and out, per customer
+ *   intakes         — completed repair booking details
+ *   escalations     — tracks which customers have been escalated to staff
+ *   wa_contacts     — Coexistence: contacts synced from the WhatsApp Business app
+ *   external_cache  — generic key/value cache for external API data (see googleSheets.js)
  *
  * Phase A (alert retry tracking) and Phase B (dashboard query functions) are
  * SUSPENDED — block-commented below rather than deleted, so they can be
@@ -77,6 +78,20 @@ export async function initDb(db) {
         full_name    TEXT,
         first_name   TEXT,
         updated_at   INTEGER DEFAULT (unixepoch())
+      )
+    `),
+
+    // Generic external-data cache — used by googleSheets.js to avoid
+    // re-authenticating with Google and re-fetching the price list on every
+    // single customer message. Two keys currently: 'google_access_token'
+    // (Google OAuth token, ~1hr lifespan) and 'pricing_sheet_rows' (the
+    // parsed price list itself, shorter TTL). Generic enough to reuse for
+    // any future external data source without a new table.
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS external_cache (
+        cache_key   TEXT PRIMARY KEY,
+        cache_value TEXT NOT NULL,
+        cached_at   INTEGER NOT NULL DEFAULT (unixepoch())
       )
     `),
 
@@ -335,6 +350,36 @@ export async function upsertContact(db, { phoneNumber, fullName, firstName }) {
 
 export async function removeContact(db, phoneNumber) {
   await db.prepare(`DELETE FROM wa_contacts WHERE phone_number = ?`).bind(phoneNumber).run();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getCache / setCache — generic external-data cache (see googleSheets.js)
+//
+// cachedAt is unix seconds — callers decide their own freshness window by
+// comparing it against the current time; this layer has no opinion on TTL.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getCache(db, key) {
+  const row = await db
+    .prepare(`SELECT cache_value, cached_at FROM external_cache WHERE cache_key = ?`)
+    .bind(key)
+    .first();
+
+  if (!row) return null;
+  return { value: row.cache_value, cachedAt: row.cached_at };
+}
+
+export async function setCache(db, key, value) {
+  await db
+    .prepare(`
+      INSERT INTO external_cache (cache_key, cache_value, cached_at)
+      VALUES (?, ?, unixepoch())
+      ON CONFLICT(cache_key) DO UPDATE SET
+        cache_value = excluded.cache_value,
+        cached_at   = unixepoch()
+    `)
+    .bind(key, value)
+    .run();
 }
 
 

@@ -8,9 +8,12 @@
  *   "LLM_PROVIDER": "claude"   (requires ANTHROPIC_API_KEY secret)
  *
  * Every provider adapter shares the same contract:
- *   input:  (history, newMessage, env)
- *     history — array of { role: 'user' | 'assistant', text } from D1,
- *               oldest first (see db.js getRecentMessages)
+ *   input:  (history, newMessage, env, pricingContext)
+ *     history         — array of { role: 'user' | 'assistant', text } from
+ *                        D1, oldest first (see db.js getRecentMessages)
+ *     pricingContext   — optional block of live price-lookup text (see
+ *                        pricing.js formatPricingContext), appended to the
+ *                        system prompt for this reply only. Defaults to ''.
  *   output: a single trimmed string reply
  *
  * bot.js calls generateReply() only — it never needs to know which
@@ -19,16 +22,16 @@
  * below and one more case in the dispatcher.
  */
 
-import { SYSTEM_PROMPT } from './prompt.js';
+import { buildSystemPrompt } from './prompt.js';
 
-export async function generateReply(history, newMessage, env) {
+export async function generateReply(history, newMessage, env, pricingContext = '') {
   const provider = (env.LLM_PROVIDER ?? 'gemini').toLowerCase();
 
   switch (provider) {
     case 'gemini':
-      return callGemini(history, newMessage, env);
+      return callGemini(history, newMessage, env, pricingContext);
     case 'claude':
-      return callClaude(history, newMessage, env);
+      return callClaude(history, newMessage, env, pricingContext);
     default:
       throw new Error(`Unknown LLM_PROVIDER "${provider}" — expected "gemini" or "claude"`);
   }
@@ -43,7 +46,7 @@ export async function generateReply(history, newMessage, env) {
 //   - System prompt goes in systemInstruction, not in messages array
 //   - Response text is nested at candidates[0].content.parts[0].text
 // ─────────────────────────────────────────────────────────────────────────────
-async function callGemini(history, newMessage, env) {
+async function callGemini(history, newMessage, env, pricingContext) {
 
   // Convert history to Gemini format — 'assistant' → 'model'
   const geminiHistory = history.map(m => ({
@@ -65,7 +68,7 @@ async function callGemini(history, newMessage, env) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
+        parts: [{ text: buildSystemPrompt(pricingContext) }],
       },
       contents,
       generationConfig: {
@@ -120,7 +123,7 @@ async function callGemini(history, newMessage, env) {
 // against Gemini's output. Cheaper/faster alternative: claude-haiku-4-5-20251001.
 // Override via env.CLAUDE_MODEL without touching this file.
 // ─────────────────────────────────────────────────────────────────────────────
-async function callClaude(history, newMessage, env) {
+async function callClaude(history, newMessage, env, pricingContext) {
   const messages = [
     ...history.map(m => ({ role: m.role, content: m.text })),
     { role: 'user', content: newMessage },
@@ -137,7 +140,7 @@ async function callClaude(history, newMessage, env) {
     },
     body: JSON.stringify({
       model,
-      system:     SYSTEM_PROMPT,
+      system:     buildSystemPrompt(pricingContext),
       messages,
       max_tokens: 500,
       thinking:   { type: 'disabled' },

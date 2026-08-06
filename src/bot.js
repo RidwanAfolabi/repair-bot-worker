@@ -5,16 +5,19 @@
  *   1. Checks for staff commands (!take, !done)
  *   2. Checks if sender is escalated — stays silent if so
  *   3. Fetches recent conversation history from D1
- *   4. Calls the configured LLM (see llm.js) with history + new message
- *   5. Detects escalation trigger in reply
- *   6. Saves reply to D1
- *   7. Sends reply in natural parts with human-paced delays
+ *   4. Pricing lookup — if the message matches the structured device-details
+ *      template, fetches the live price sheet and builds pricing context
+ *   5. Calls the configured LLM (see llm.js) with history + new message +
+ *      pricing context
+ *   6. Detects escalation trigger in reply
+ *   7. Saves reply to D1
+ *   8. Sends reply in natural parts with human-paced delays
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
  * entirely in index.js before this function is called. By the time
  * handleIncomingMessage() is invoked, the message is always text.
  */
- 
+
 import {
   getRecentMessages,
   saveMessage,
@@ -29,6 +32,14 @@ import {
 } from './whatsapp.js';
 
 import { generateReply } from './llm.js';
+
+import {
+  parseStructuredDeviceReply,
+  findPricing,
+  formatPricingContext,
+} from './pricing.js';
+
+import { getPricingRows } from './googleSheets.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,16 +70,36 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
   // is aware that media was sent even if it couldn't read it.
   const history = await getRecentMessages(env.DB, senderId, 6);
 
-  // ── 4. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
+  // ── 4. Pricing lookup — structured device-detail replies only ────────────
+  // If this message matches the manager's brand/model/damage template (see
+  // prompt.js "ASKING FOR DEVICE DETAILS"), look up the live price sheet and
+  // feed matched rows to the LLM as extra context. Any failure here (sheet
+  // unreachable, no match, bad auth) falls back to an empty pricingContext —
+  // the LLM still replies from its own prompt/history, just without live
+  // pricing to reference for this particular message.
+  let pricingContext = '';
+  const deviceDetails = parseStructuredDeviceReply(incomingText);
+  if (deviceDetails) {
+    try {
+      const rows  = await getPricingRows(env);
+      const match = findPricing(deviceDetails, rows);
+      pricingContext = formatPricingContext(match);
+      console.log(`[Bot] Pricing lookup for ${senderId} — tier: ${match.tier}, rows: ${match.rows.length}`);
+    } catch (err) {
+      console.error('[Bot] Pricing lookup failed:', err.message);
+    }
+  }
+
+  // ── 5. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
   let aiReply;
   try {
-    aiReply = await generateReply(history, incomingText, env);
+    aiReply = await generateReply(history, incomingText, env, pricingContext);
   } catch (err) {
     console.error(`[Bot] LLM error (${env.LLM_PROVIDER ?? 'gemini'}):`, err.message);
     aiReply = 'Maaf, ada gangguan teknikal sebentar. Team kami akan balas anda tidak lama lagi! 🙏';
   }
 
-  // ── 5. Detect escalation trigger in reply ────────────────────────────────
+  // ── 6. Detect escalation trigger in reply ────────────────────────────────
   if (shouldEscalate(aiReply)) {
     await setManualMute(env.DB, senderId);
     await sendStaffAlert(
@@ -83,17 +114,17 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
     console.log(`[Bot] Escalated ${senderId} to staff`);
   }
 
-  // ── 6. Save bot reply ─────────────────────────────────────────────────────
+  // ── 7. Save bot reply ─────────────────────────────────────────────────────
   await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
 
-  // ── 7. Send in natural parts with human-paced delays ─────────────────────
+  // ── 8. Send in natural parts with human-paced delays ─────────────────────
   await sendInParts(senderId, aiReply, env);
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // shouldEscalate — detect escalation phrase in A'aisyah's reply
-// Must match the exact phrase defined in SYSTEM_PROMPT
+// Must match the exact phrase defined in prompt.js buildSystemPrompt()
 // ─────────────────────────────────────────────────────────────────────────────
 function shouldEscalate(reply) {
   return reply.toLowerCase().includes('biar saya connectkan');

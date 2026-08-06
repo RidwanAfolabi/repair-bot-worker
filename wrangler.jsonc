@@ -60,8 +60,10 @@
 		"MUTE_WINDOW_MINUTES": "75",
 		"LLM_PROVIDER": "gemini",
 		"GEMINI_MODEL": "gemini-3.1-flash-lite",
-		"CLAUDE_MODEL": "claude-sonnet-5"
-},
+		"CLAUDE_MODEL": "claude-sonnet-5",
+		"GOOGLE_SHEET_ID": "1nivMpkhXgaXbOGkMYLq2E9aj20L6UO1a27lXc0vYYrA",
+		"GOOGLE_SHEET_RANGE": "Sheet1"
+	}
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

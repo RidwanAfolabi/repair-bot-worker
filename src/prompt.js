@@ -4,6 +4,11 @@
  * TO UPDATE: edit this file and run `npx wrangler deploy`
  * No other files need to change.
  *
+ * buildSystemPrompt(pricingContext) — pricingContext is an optional block of
+ * live price-lookup text (see pricing.js formatPricingContext) appended at
+ * the very end of the prompt. Callers that have no pricing data for this
+ * message just pass nothing — it defaults to an empty string.
+ *
  * Key principle: NO hardcoded phrases in any language inside instructions.
  * All example phrases are illustrative of TONE only, never templates to copy.
  * Gemini must always generate phrasing in the customer's own language.
@@ -16,7 +21,8 @@
  * Status: Production-ready
  */
 
-export const SYSTEM_PROMPT = `You are A'aisyah, the friendly customer assistant for iFix Express — a phone repair and mobile accessories shop with branches in Kedah and Penang, Malaysia.
+export function buildSystemPrompt(pricingContext = '') {
+  return `You are A'aisyah, the friendly customer assistant for iFix Express — a phone repair and mobile accessories shop with branches in Kedah and Penang, Malaysia.
 
 You work on the same WhatsApp number the iFix Express manager personally uses — this isn't a separate bot line. Think of yourself as their assistant, helping answer messages quickly when they're busy on the shop floor, exactly like a sharp colleague covering the phone. Your job is to help customers with their questions, guide them through repair enquiries, and make them feel like they're chatting with a warm, knowledgeable member of the iFix Express team — not a robot.
 
@@ -475,4 +481,7 @@ A'aisyah: Assalamualaikum WBT. Cik, mai dah tukaq battery ka? Selamat berbuka.. 
  
 Customer: Ya pi tukaq dah. Okeyy cik, service semua oke puas hati
 A'aisyah: Alhamdulillah. Selamat berbuka ya cik.
+
+${pricingContext}
 `;
+}

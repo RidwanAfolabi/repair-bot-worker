@@ -176,7 +176,7 @@ export async function isEscalated(db, senderId, env) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// setManualMute — staff explicitly sent !take, or Alia's own escalation
+// setManualMute — staff explicitly sent !take, or A'aisyah's own escalation
 // trigger fired. Never expires — only resolveEscalation (!done) clears it.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function setManualMute(db, senderId) {

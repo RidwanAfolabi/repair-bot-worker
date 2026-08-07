@@ -5,13 +5,16 @@
  *   1. Checks for staff commands (!take, !done)
  *   2. Checks if sender is escalated — stays silent if so
  *   3. Fetches recent conversation history from D1
- *   4. Pricing lookup — if the message matches the structured device-details
- *      template, fetches the live price sheet and builds pricing context
+ *   4. Pricing lookup — matches a brand tab (or the fallback tab for a
+ *      generic pricing/repair enquiry) and builds pricing context (see
+ *      pricing.js matchBrandTab / findFallbackTab / looksLikePricingEnquiry)
  *   5. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
- *   6. Detects escalation trigger in reply
- *   7. Saves reply to D1
- *   8. Sends reply in natural parts with human-paced delays
+ *   6. Saves reply to D1
+ *   7. Sends reply in natural parts with human-paced delays — BEFORE the
+ *      escalation mute below, so an escalation notice always reaches the
+ *      customer instead of getting caught by its own just-set mute
+ *   8. Detects escalation trigger in reply, mutes and alerts staff if found
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
  * entirely in index.js before this function is called. By the time
@@ -114,7 +117,20 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
     aiReply = 'Maaf, ada gangguan teknikal sebentar. Team kami akan balas anda tidak lama lagi! 🙏';
   }
 
-  // ── 6. Detect escalation trigger in reply ────────────────────────────────
+  // ── 6. Save bot reply ─────────────────────────────────────────────────────
+  await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
+
+  // ── 7. Send in natural parts with human-paced delays ─────────────────────
+  // Must happen BEFORE step 8 sets the mute flag below. sendInParts checks
+  // isEscalated() before every part it sends (see sendIfStillActive) — if
+  // this reply is itself the one that triggers escalation, muting first
+  // would make that check see its own just-set mute and silently drop the
+  // very message that's supposed to tell the customer "connecting you now."
+  // Sending first guarantees the escalation notice always reaches them; the
+  // mute then only affects whatever comes after it.
+  await sendInParts(senderId, aiReply, env);
+
+  // ── 8. Detect escalation trigger in reply ────────────────────────────────
   if (shouldEscalate(aiReply)) {
     await setManualMute(env.DB, senderId);
     await sendStaffAlert(
@@ -128,12 +144,6 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
     );
     console.log(`[Bot] Escalated ${senderId} to staff`);
   }
-
-  // ── 7. Save bot reply ─────────────────────────────────────────────────────
-  await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
-
-  // ── 8. Send in natural parts with human-paced delays ─────────────────────
-  await sendInParts(senderId, aiReply, env);
 }
 
 

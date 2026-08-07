@@ -99,12 +99,17 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   }
 
   // ── 4. Fetch recent conversation history ──────────────────────────────────
-  // Last 6 messages (3 exchanges) — enough context without ballooning token cost.
+  // Default 16 messages (8 exchanges) — a real support conversation (device
+  // details -> pricing -> branch -> wrap-up) commonly runs 5-8 exchanges, so
+  // the previous default of 6 (3 exchanges) was losing the opening context
+  // partway through an ordinary conversation, causing the LLM to re-ask
+  // things the customer already answered. Higher token cost per call is the
+  // tradeoff — tune via HISTORY_MESSAGE_LIMIT if that becomes a concern.
   // History includes D1 records of [Customer sent image] events so Gemini
   // is aware that media was sent even if it couldn't read it. Thanks to the
   // debounce above, this also naturally covers every message in a rapid
   // burst — not just the latest one.
-  const history = await getRecentMessages(env.DB, senderId, 6);
+  const history = await getRecentMessages(env.DB, senderId, Number(env.HISTORY_MESSAGE_LIMIT ?? 16));
 
   // ── 5. Pricing lookup — brand detected anywhere in the message ───────────
   // Fuzzy-matches the message against the spreadsheet's ACTUAL current tab
@@ -236,11 +241,8 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
   if (cmd === '!done' && target) {
     await resolveEscalation(env.DB, target);
     await sendTextMessage(replyTo, `✅ Bot resumed for +${target}.`, env);
-    await sendTextMessage(
-      target,
-      'Terima kasih kerana menghubungi iFix Express! Ada lagi yang boleh kami bantu? 😊',
-      env
-    );
+    // No message sent to the customer here — resuming silently. A'aisyah
+    // will only speak again once the customer sends their next message.
     return true;
   }
 

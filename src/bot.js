@@ -113,14 +113,19 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // structured template replies — since the LLM now searches the whole
   // matched tab itself rather than relying on code to narrow to one row.
   //
-  // No brand match + a pricing/repair signal word (see ENQUIRY_SIGNAL_WORDS
-  // in pricing.js) → checks the Services & Accessories fallback tab instead
-  // (cables, screen protectors, general service charges, deposits — items
-  // that were never going to match a brand tab in the first place).
+  // ALWAYS includes the Services & Accessories fallback tab alongside a
+  // matched brand tab (not only when no brand matches) — a customer asking
+  // about, say, an iPhone screen protector or a generic repair charge that
+  // hasn't been moved into a brand-specific tab yet still gets found this
+  // way, without needing the LLM to ask for more data mid-reply (rejected
+  // in favour of this simpler always-include approach — see prior design
+  // discussion: the fallback tab is small enough that paying a small,
+  // predictable, constant cost on every pricing enquiry beats a second,
+  // probabilistic LLM round-trip).
   //
-  // No brand AND no signal word → skipped entirely, e.g. "hi", "what time
-  // do you close" — no reason to inject a fallback tab's contents into
-  // every single message regardless of relevance.
+  // No brand AND no pricing/repair signal word (see ENQUIRY_SIGNAL_WORDS in
+  // pricing.js) → skipped entirely, e.g. "hi", "what time do you close" —
+  // no reason to inject fallback-tab contents into every single message.
   //
   // Any failure here (sheet unreachable, no match, bad auth) falls back to
   // an empty pricingContext — the LLM still replies from its own prompt/
@@ -129,12 +134,26 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   try {
     const tabs = await getSheetTabs(env);
     const brandTab = matchBrandTab(incomingText, tabs);
-    const targetTab = brandTab ?? (looksLikePricingEnquiry(incomingText) ? findFallbackTab(tabs) : null);
+    const fallbackTab = findFallbackTab(tabs);
 
-    if (targetTab) {
-      const rows = await getPricingRows(env, targetTab);
-      pricingContext = formatPricingContext(targetTab, rows);
-      console.log(`[Bot] Pricing lookup for ${senderId} — tab: ${targetTab}, rows: ${rows.length}`);
+    let targetTabs = [];
+    if (brandTab) {
+      targetTabs = fallbackTab ? [brandTab, fallbackTab] : [brandTab];
+    } else if (looksLikePricingEnquiry(incomingText)) {
+      targetTabs = fallbackTab ? [fallbackTab] : [];
+    }
+
+    if (targetTabs.length > 0) {
+      const sections = await Promise.all(
+        targetTabs.map(async (tabName) => ({
+          tabName,
+          rows: await getPricingRows(env, tabName),
+        }))
+      );
+
+      pricingContext = formatPricingContext(sections);
+      const totalRows = sections.reduce((sum, s) => sum + s.rows.length, 0);
+      console.log(`[Bot] Pricing lookup for ${senderId} — tabs: ${targetTabs.join(', ')}, rows: ${totalRows}`);
     }
   } catch (err) {
     console.error('[Bot] Pricing lookup failed:', err.message);

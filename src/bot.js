@@ -34,12 +34,13 @@ import {
 import { generateReply } from './llm.js';
 
 import {
-  parseStructuredDeviceReply,
-  findPricing,
+  matchBrandTab,
+  findFallbackTab,
+  looksLikePricingEnquiry,
   formatPricingContext,
 } from './pricing.js';
 
-import { getPricingRows } from './googleSheets.js';
+import { getSheetTabs, getPricingRows } from './googleSheets.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,24 +71,38 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
   // is aware that media was sent even if it couldn't read it.
   const history = await getRecentMessages(env.DB, senderId, 6);
 
-  // ── 4. Pricing lookup — structured device-detail replies only ────────────
-  // If this message matches the manager's brand/model/damage template (see
-  // prompt.js "ASKING FOR DEVICE DETAILS"), look up the live price sheet and
-  // feed matched rows to the LLM as extra context. Any failure here (sheet
-  // unreachable, no match, bad auth) falls back to an empty pricingContext —
-  // the LLM still replies from its own prompt/history, just without live
-  // pricing to reference for this particular message.
+  // ── 4. Pricing lookup — brand detected anywhere in the message ───────────
+  // Fuzzy-matches the message against the spreadsheet's ACTUAL current tab
+  // titles (not a hardcoded brand list), so a new brand tab just works with
+  // no code change. Triggers on any message mentioning a brand — not just
+  // structured template replies — since the LLM now searches the whole
+  // matched tab itself rather than relying on code to narrow to one row.
+  //
+  // No brand match + a pricing/repair signal word (see ENQUIRY_SIGNAL_WORDS
+  // in pricing.js) → checks the Services & Accessories fallback tab instead
+  // (cables, screen protectors, general service charges, deposits — items
+  // that were never going to match a brand tab in the first place).
+  //
+  // No brand AND no signal word → skipped entirely, e.g. "hi", "what time
+  // do you close" — no reason to inject a fallback tab's contents into
+  // every single message regardless of relevance.
+  //
+  // Any failure here (sheet unreachable, no match, bad auth) falls back to
+  // an empty pricingContext — the LLM still replies from its own prompt/
+  // history, just without live pricing to reference for this message.
   let pricingContext = '';
-  const deviceDetails = parseStructuredDeviceReply(incomingText);
-  if (deviceDetails) {
-    try {
-      const rows  = await getPricingRows(env);
-      const match = findPricing(deviceDetails, rows);
-      pricingContext = formatPricingContext(match);
-      console.log(`[Bot] Pricing lookup for ${senderId} — tier: ${match.tier}, rows: ${match.rows.length}`);
-    } catch (err) {
-      console.error('[Bot] Pricing lookup failed:', err.message);
+  try {
+    const tabs = await getSheetTabs(env);
+    const brandTab = matchBrandTab(incomingText, tabs);
+    const targetTab = brandTab ?? (looksLikePricingEnquiry(incomingText) ? findFallbackTab(tabs) : null);
+
+    if (targetTab) {
+      const rows = await getPricingRows(env, targetTab);
+      pricingContext = formatPricingContext(targetTab, rows);
+      console.log(`[Bot] Pricing lookup for ${senderId} — tab: ${targetTab}, rows: ${rows.length}`);
     }
+  } catch (err) {
+    console.error('[Bot] Pricing lookup failed:', err.message);
   }
 
   // ── 5. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────

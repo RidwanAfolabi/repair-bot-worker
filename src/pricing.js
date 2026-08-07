@@ -1,41 +1,30 @@
 /**
- * pricing.js — matches customer enquiries against the iFix Express price list
+ * pricing.js — connects a customer enquiry to the right worksheet in the
+ * live Google Sheets price list, and formats that worksheet's full contents
+ * for the LLM to search itself.
  *
- * Independent of however the sheet data actually gets fetched — parseSheet()
- * for a raw CSV export, rowsFromApiValues() for the live Google Sheets API
- * response used by googleSheets.js. Either way this module only cares about:
- * given rows in the shape { code, category, description, price } and a
- * customer's brand/model/damage type, find the right ones.
+ * DESIGN CHANGE from the original tier-based matcher: rather than having
+ * code narrow down to a single row (which was fragile — a wrong keyword
+ * match or an unrecognized model phrasing meant the LLM never even saw the
+ * right data), this hands over the WHOLE matched brand's rows and lets the
+ * LLM find the specific item itself. The LLM is better suited to fuzzy
+ * matching against a labelled list than a keyword dictionary is, and the
+ * token cost is bounded — a brand's full sheet is ~100-200 rows, not the
+ * whole 1500+ item catalog.
  *
- * parseStructuredDeviceReply() extracts that brand/model/damage type from a
- * customer's reply to the prompt's structured device-details template, and
- * formatPricingContext() turns a match back into prompt text — together
- * these are the glue between an incoming WhatsApp message and what gets fed
- * to the LLM (see bot.js step 4).
+ * The spreadsheet is organized as one tab per brand (e.g. "iPhone",
+ * "Samsung", "Vivo"), plus one non-brand tab, "Services & Accessories",
+ * for items that don't belong to any specific device (cables, screen
+ * protectors, general service charges, deposits).
  *
- * Lookup tiers, most to least specific:
- *   1. exact     — Category (brand + part-type) AND Description (model) both
- *                  match, and the row has a real price (> 0). Safe to quote
- *                  as a confirmed price.
- *   2. unpriced  — same exact Category+Description match as above, but the
- *                  row's price is 0 — a placeholder for "not yet priced,"
- *                  not "free" (confirmed from real sheet data). The repair
- *                  IS offered, but no number exists to quote — must not be
- *                  stated as RM0 or guessed.
- *   3. category  — Category matches (brand + part-type), but no specific
- *                  model match in Description. Returns everything in that
- *                  category as CONTEXT ONLY — per the system prompt's
- *                  "when you are not sure" rule, none of these should be
- *                  quoted as the customer's price. Useful for A'aisyah to
- *                  say something like "we have pricing for related Samsung
- *                  screens, let me confirm the exact one for your model"
- *                  rather than a bare "let me check."
- *   4. none      — nothing matched at all. Genuinely unknown, escalate.
+ * matchBrandTab() fuzzy-matches a customer's message against the
+ * spreadsheet's ACTUAL current tab titles (fetched live via
+ * googleSheets.js's getSheetTabs) — not a hardcoded brand list — so a new
+ * brand tab added later just works with no code change.
  *
  * Sheet columns (confirmed from real export): Code, Category, Description, Price
- * Category format: "NN.0 [TYPE] [BRAND]" e.g. "01.0 LCD IPHONE", "25.0 SERVICES"
- * Description sometimes lists multiple models separated by "/"
- *   e.g. "13.2 LCD OPPO A78 5G/A58 5G" matches either A78 or A58 enquiries
+ * A price of 0 means "not yet priced," not "free" — every row in this
+ * category still needs manual confirmation, see formatPricingContext below.
  */
 
 export function parseSheet(csvText) {
@@ -103,24 +92,9 @@ export function rowsFromApiValues(values) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseStructuredDeviceReply — extract brand/model/damageType from a
-// customer's reply to the "ASKING FOR DEVICE DETAILS" template in prompt.js:
-//
-//   1. Jenama handphone: Samsung
-//   2. Model handphone: Note 20 Ultra
-//   3. Jenis kerosakkan: Screen
-//
-// Only reliably parses the BM template — it's the one fixed format everyone
-// (manager and A'aisyah) actually uses verbatim. The English adaptation is
-// deliberately NOT a fixed string in the prompt (customers phrase it however
-// they like), so it can't be pattern-matched here; a customer replying in
-// English simply won't match and pricing lookup is skipped for that message
-// — the LLM still replies normally, just without live pricing context.
-//
-// Line-by-line matching means extra text before/after the three lines (a
-// greeting, a follow-up question) is harmless — those lines just don't match
-// any pattern and are ignored. Returns null unless all three fields are
-// found; a partial match is treated as "not enough to look up" rather than
-// guessing at what's missing.
+// customer's reply to the "ASKING FOR DEVICE DETAILS" template in prompt.js.
+// Not used by the live pricing lookup anymore (see matchBrandTab below) —
+// kept available for other potential uses (e.g. feeding a repair booking).
 // ─────────────────────────────────────────────────────────────────────────────
 const DEVICE_FIELD_PATTERNS = {
   brand:      /jenama\s*handphone\s*:\s*(.+)/i,
@@ -151,88 +125,8 @@ export function parseStructuredDeviceReply(text) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// formatPricingContext — turn a findPricing() result into a block of text
-// appended to the system prompt (see prompt.js buildSystemPrompt).
-//
-// Ties directly to the "## WHEN YOU ARE NOT SURE" prompt rule: 'exact' rows
-// are explicitly safe to quote, 'category' rows are explicitly NOT — they're
-// framed as context for a more informed hand-off, never as a price. 'none'
-// (or no match object at all) produces no block; the LLM falls back to its
-// normal "don't guess, escalate" behaviour with no live data to lean on.
+// normalize — shared text-cleaning helper used by all matching below
 // ─────────────────────────────────────────────────────────────────────────────
-export function formatPricingContext(matchResult) {
-  if (!matchResult || matchResult.tier === 'none' || matchResult.rows.length === 0) {
-    return '';
-  }
-
-  const lines = matchResult.rows.map(
-    row => `- ${row.description} (${row.category}): RM${row.price}`
-  );
-
-  if (matchResult.tier === 'unpriced') {
-    const row = matchResult.rows[0];
-    return [
-      '## LIVE PRICE LOOKUP RESULT — MATCHED, BUT NOT YET PRICED',
-      '',
-      `Exact match found in the catalog: ${row.description} (${row.category}). This repair IS offered — do not tell the customer it's unavailable. However, no price has been entered for it yet, so you do not have a real number to quote. Do not state RM0 and do not make up a price. Follow the escalation approach to confirm the exact price.`,
-    ].join('\n');
-  }
-
-  if (matchResult.tier === 'exact') {
-    return [
-      '## LIVE PRICE LOOKUP RESULT — CONFIRMED MATCH',
-      '',
-      "The following price was found in the live price list for this customer's exact device and damage type. You may quote this price directly.",
-      '',
-      ...lines,
-    ].join('\n');
-  }
-
-  // tier === 'category'
-  return [
-    '## LIVE PRICE LOOKUP RESULT — RELATED ITEMS ONLY, NOT A CONFIRMED MATCH',
-    '',
-    "No exact match was found for this customer's specific model. The items below are from the same brand and repair category and are for CONTEXT ONLY — do not quote any of these as the customer's price. Let them know you have related pricing and will confirm the exact figure for their model, following the escalation approach for anything uncertain.",
-    '',
-    ...lines,
-  ].join('\n');
-}
-
-
-export function findPricing({ brand, model, damageType }, rows) {
-  const brandNorm = normalize(brand);
-  const typeNorm  = normalize(damageType);
-  const modelNorm = normalize(model);
-
-  const categoryMatches = rows.filter(row => {
-    const catNorm = normalize(row.category);
-    return catNorm.includes(brandNorm) && categoryMentionsType(catNorm, typeNorm);
-  });
-
-  const exact = categoryMatches.find(row => {
-    const descNorm = normalize(row.description);
-    return descNorm.split('/').some(part => part.includes(modelNorm)) || descNorm.includes(modelNorm);
-  });
-
-  if (exact) {
-    // Price of 0 means "not yet priced," not "free" — real sheet rows can
-    // sit at 0 before someone fills in the actual number. Must not be
-    // quoted as RM0, but also isn't a true "no match" — the item genuinely
-    // exists in the catalog, so A'aisyah should say the repair is offered
-    // while still deferring the actual price.
-    if (exact.price === 0) {
-      return { tier: 'unpriced', rows: [exact] };
-    }
-    return { tier: 'exact', rows: [exact] };
-  }
-
-  if (categoryMatches.length > 0) {
-    return { tier: 'category', rows: categoryMatches };
-  }
-
-  return { tier: 'none', rows: [] };
-}
-
 function normalize(text) {
   return (text ?? '')
     .toUpperCase()
@@ -241,15 +135,112 @@ function normalize(text) {
     .trim();
 }
 
-const TYPE_KEYWORDS = {
-  SCREEN:  ['LCD'],
-  LCD:     ['LCD'],
-  BATTERY: ['BATTERY'],
-  BATT:    ['BATTERY'],
-  SERVICE: ['SERVICES', 'SVC'],
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FALLBACK_TAB_NAME — the non-brand tab for cables, screen protectors,
+// general service charges, deposits, anything not tied to a specific device
+// ─────────────────────────────────────────────────────────────────────────────
+// FALLBACK_TAB_NAME must already be in normalize()'s output format — the
+// comparisons below use normalize(t) === FALLBACK_TAB_NAME directly, so this
+// constant needs to match what normalize('Services & Accessories') actually
+// produces (the & gets stripped as non-alphanumeric), not the raw tab title.
+const FALLBACK_TAB_NAME = 'SERVICES ACCESSORIES';
+
+// Words that appear as a different word than the brand's real tab name —
+// "Apple" doesn't literally appear in the sheet anywhere (it's all "IPHONE"),
+// so plain substring matching would never connect the two on its own.
+// Add more here as real examples come up — deliberately starting small.
+const BRAND_ALIASES = {
+  APPLE: 'IPHONE',
 };
 
-function categoryMentionsType(catNorm, typeNorm) {
-  const keywords = TYPE_KEYWORDS[typeNorm] ?? [typeNorm];
-  return keywords.some(kw => catNorm.includes(kw));
+// Lightweight signal that a message is a pricing/repair enquiry at all —
+// used ONLY to decide whether to check the Services & Accessories fallback
+// tab when no brand was matched. Without this gate, every ordinary message
+// ("hi", "what time do you close") would trigger a fallback-tab fetch and
+// injection for no reason. This is a judgment-call keyword list, not
+// empirically tuned — worth adjusting once real traffic shows its gaps.
+const ENQUIRY_SIGNAL_WORDS = [
+  'HARGA', 'PRICE', 'BERAPA', 'HOW MUCH', 'COST',
+  'REPAIR', 'BAIKI', 'FIX', 'ROSAK', 'SPOIL', 'TUKAR', 'REPLACE',
+  'SERVICE', 'CABLE', 'KABEL', 'PROTECTOR', 'DEPOSIT', 'CHARGER', 'CAS',
+];
+
+export function looksLikePricingEnquiry(text) {
+  const norm = normalize(text);
+  return ENQUIRY_SIGNAL_WORDS.some(word => norm.includes(normalize(word)));
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// matchBrandTab — fuzzy-match a customer's message against the spreadsheet's
+// REAL current tab titles (from googleSheets.js's getSheetTabs — always the
+// live list, not a hardcoded brand array, so a new tab just works).
+//
+// Direction of match: does the tab's name appear as a substring of the
+// customer's (normalized, alias-expanded) message? "SAMSUNG S20 MINI"
+// contains "SAMSUNG" — tab "Samsung" matches. If more than one tab matches
+// (shouldn't normally happen with distinct brand names), the longest/most
+// specific tab name wins as a tie-breaker.
+//
+// Returns null if nothing matched — caller decides whether to check the
+// fallback tab or skip the lookup entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+export function matchBrandTab(customerText, tabTitles) {
+  let normText = normalize(customerText);
+
+  for (const [alias, canonical] of Object.entries(BRAND_ALIASES)) {
+    if (normText.includes(alias)) {
+      normText += ' ' + canonical;
+    }
+  }
+
+  const brandTabs = tabTitles.filter(t => normalize(t) !== FALLBACK_TAB_NAME);
+  const matches = brandTabs.filter(tab => normText.includes(normalize(tab)));
+
+  if (matches.length === 0) return null;
+
+  matches.sort((a, b) => b.length - a.length);
+  return matches[0];
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// findFallbackTab — locate the Services & Accessories tab among the real
+// tab titles (case-insensitive, tolerant of minor formatting differences)
+// ─────────────────────────────────────────────────────────────────────────────
+export function findFallbackTab(tabTitles) {
+  return tabTitles.find(t => normalize(t) === FALLBACK_TAB_NAME) ?? null;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// formatPricingContext — turn a matched tab's full row set into a block of
+// text appended to the system prompt (see prompt.js buildSystemPrompt).
+//
+// No tiers anymore — the LLM gets everything for the matched tab and finds
+// the specific item itself. The "don't guess, don't state RM0" rule is
+// stated directly alongside the data here, not just relied on from the
+// distant system-prompt-level rule, since that's more reliable for
+// instruction-following than a rule stated once, far away from the data
+// it actually governs.
+// ─────────────────────────────────────────────────────────────────────────────
+export function formatPricingContext(tabName, rows) {
+  if (!rows || rows.length === 0) {
+    return `## CURRENT PRICING (live lookup for this enquiry)\nNo pricing data available for this enquiry. Treat as unknown and follow the escalation approach.`;
+  }
+
+  const list = rows
+    .map(r => `- ${r.description}: RM${r.price}`)
+    .join('\n');
+
+  return `## CURRENT PRICING — ${tabName} (live lookup for this enquiry)
+Below is the FULL current price list for ${tabName}. Carefully find the specific item that matches what the customer is asking about — their wording may be informal or phrased differently than how items are listed here.
+
+${list}
+
+Rules for using this data:
+- Only state a price if you find a clear, specific match for what the customer described.
+- A price of RM0 means the item exists but has not been priced yet. Do NOT say RM0, and do NOT say we don't offer it — confirm we DO offer it, then follow the escalation approach to get the exact price.
+- If nothing here clearly matches what the customer asked, do not guess or pick the closest item — treat it as unknown and follow the escalation approach.`;
 }

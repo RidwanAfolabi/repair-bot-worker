@@ -2,19 +2,22 @@
  * googleSheets.js — fetch the live price list from Google Sheets
  *
  * Uses a Google service account (JWT Bearer OAuth2 flow — no user consent
- * screen, no refresh token to manage) to read a read-only range from the
- * iFix Express pricing sheet. Two things are cached in D1 (see db.js
+ * screen, no refresh token to manage) to read the iFix Express pricing
+ * spreadsheet, organized as one tab per brand plus a "Services & Accessories"
+ * tab for everything else. Three things are cached in D1 (see db.js
  * getCache/setCache) to avoid re-authenticating and re-fetching on every
  * single customer message:
  *
- *   'google_access_token'  — the OAuth2 access token, ~1hr lifespan.
- *                             Refreshed when within TOKEN_REFRESH_SKEW
- *                             seconds of expiry.
- *   'pricing_sheet_rows'   — the parsed price list rows themselves.
- *                             Refreshed every SHEET_CACHE_TTL seconds so a
- *                             manager editing the sheet shows up reasonably
- *                             fast without hitting the Sheets API on every
- *                             single WhatsApp message.
+ *   'google_access_token'        — the OAuth2 access token, ~1hr lifespan.
+ *                                   Refreshed when within TOKEN_REFRESH_SKEW
+ *                                   seconds of expiry.
+ *   'pricing_sheet_tabs'         — the spreadsheet's actual current tab
+ *                                   titles (see getSheetTabs) — a new brand
+ *                                   tab added later is picked up automatically
+ *                                   on the next refresh, no code change needed.
+ *   'pricing_sheet_rows_<TAB>'   — one cache entry PER TAB, so asking about
+ *                                   Vivo doesn't invalidate or need a fresh
+ *                                   fetch for Samsung's already-cached rows.
  *
  * Requires secrets (set via `npx wrangler secret put <NAME>`):
  *   GOOGLE_SERVICE_ACCOUNT_EMAIL — the service account's client_email
@@ -24,7 +27,8 @@
  *
  * Requires vars (plain, non-sensitive — set in wrangler.jsonc):
  *   GOOGLE_SHEET_ID    — the spreadsheet ID from its URL
- *   GOOGLE_SHEET_RANGE — e.g. "Sheet1" or "Sheet1!A:D"
+ *   (GOOGLE_SHEET_RANGE is no longer used — tabs are fetched by name,
+ *   determined dynamically per enquiry by pricing.js's matchBrandTab)
  *
  * The service account must have at least Viewer access to the spreadsheet
  * — share the sheet with GOOGLE_SERVICE_ACCOUNT_EMAIL like any other user.
@@ -40,15 +44,14 @@ const SHEET_CACHE_TTL    = 300; // re-fetch sheet at most every 5 minutes
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getPricingRows — cached, end-to-end: auth + fetch + parse
-//
-// Never throws — any failure (auth, network, malformed response) falls back
-// to the last cached rows if any exist, or an empty array if not. Callers
-// should treat [] as "no live pricing data available right now," not a
-// crash — findPricing() on an empty array just returns tier 'none'.
+// getSheetTabs — cached list of the spreadsheet's ACTUAL current tab titles.
+// This is what pricing.js's matchBrandTab fuzzy-matches a customer's message
+// against — not a hardcoded brand list — so a new brand tab added to the
+// spreadsheet later just works on the next cache refresh, no code change.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function getPricingRows(env) {
-  const cached = await getCache(env.DB, 'pricing_sheet_rows');
+export async function getSheetTabs(env) {
+  const cacheKey = 'pricing_sheet_tabs';
+  const cached = await getCache(env.DB, cacheKey);
   const nowSeconds = Math.floor(Date.now() / 1000);
 
   if (cached && (nowSeconds - cached.cachedAt) < SHEET_CACHE_TTL) {
@@ -57,14 +60,71 @@ export async function getPricingRows(env) {
 
   try {
     const accessToken = await getAccessToken(env);
-    const values = await fetchSheetValues(env, accessToken);
+    const titles = await fetchSheetTabTitles(env, accessToken);
+
+    await setCache(env.DB, cacheKey, JSON.stringify(titles));
+    console.log(`[GoogleSheets] ✅ Fetched ${titles.length} worksheet tab(s): ${titles.join(', ')}`);
+    return titles;
+  } catch (err) {
+    console.error('[GoogleSheets] Tab list fetch failed:', err.message);
+
+    if (cached) {
+      console.log('[GoogleSheets] Falling back to stale cached tab list');
+      return JSON.parse(cached.value);
+    }
+
+    return [];
+  }
+}
+
+async function fetchSheetTabTitles(env, accessToken) {
+  const sheetId = env.GOOGLE_SHEET_ID;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties.title`;
+
+  const response = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Google Sheets API (tab list) ${response.status}: ${err}`);
+  }
+
+  const data = await response.json();
+  return (data.sheets ?? []).map(s => s.properties?.title).filter(Boolean);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getPricingRows — cached, end-to-end: auth + fetch + parse, for ONE tab
+//
+// Cache key includes the tab name, so asking about Vivo doesn't invalidate
+// or need a fresh fetch for Samsung's already-cached rows — each brand (and
+// the Services & Accessories fallback) refreshes independently.
+//
+// Never throws — any failure (auth, network, malformed response) falls back
+// to the last cached rows if any exist, or an empty array if not. Callers
+// should treat [] as "no live pricing data available right now," not a crash.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getPricingRows(env, tabName) {
+  const cacheKey = `pricing_sheet_rows_${cacheKeySafe(tabName)}`;
+  const cached = await getCache(env.DB, cacheKey);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  if (cached && (nowSeconds - cached.cachedAt) < SHEET_CACHE_TTL) {
+    return JSON.parse(cached.value);
+  }
+
+  try {
+    const accessToken = await getAccessToken(env);
+    const values = await fetchSheetValues(env, accessToken, tabName);
     const rows = rowsFromApiValues(values);
 
-    await setCache(env.DB, 'pricing_sheet_rows', JSON.stringify(rows));
-    console.log(`[GoogleSheets] ✅ Fetched ${rows.length} pricing row(s)`);
+    await setCache(env.DB, cacheKey, JSON.stringify(rows));
+    console.log(`[GoogleSheets] ✅ Fetched ${rows.length} row(s) from "${tabName}"`);
     return rows;
   } catch (err) {
-    console.error('[GoogleSheets] Fetch failed:', err.message);
+    console.error(`[GoogleSheets] Fetch failed for tab "${tabName}":`, err.message);
 
     if (cached) {
       console.log('[GoogleSheets] Falling back to stale cached pricing data');
@@ -73,6 +133,10 @@ export async function getPricingRows(env) {
 
     return [];
   }
+}
+
+function cacheKeySafe(tabName) {
+  return (tabName ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
 }
 
 
@@ -153,11 +217,11 @@ async function buildSignedJwt(env) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// fetchSheetValues — GET the configured range from the Sheets API
+// fetchSheetValues — GET one tab's full contents from the Sheets API
 // ─────────────────────────────────────────────────────────────────────────────
-async function fetchSheetValues(env, accessToken) {
+async function fetchSheetValues(env, accessToken, tabName) {
   const sheetId = env.GOOGLE_SHEET_ID;
-  const range   = encodeURIComponent(env.GOOGLE_SHEET_RANGE ?? 'Sheet1');
+  const range   = encodeURIComponent(tabName);
   const url     = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}`;
 
   const response = await fetch(url, {

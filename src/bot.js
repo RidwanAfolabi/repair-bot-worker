@@ -4,17 +4,19 @@
  * For each incoming message:
  *   1. Checks for staff commands (!take, !done)
  *   2. Checks if sender is escalated — stays silent if so
- *   3. Fetches recent conversation history from D1
- *   4. Pricing lookup — matches a brand tab (or the fallback tab for a
+ *   3. Debounce — waits MESSAGE_DEBOUNCE_MS, then bails if a newer message
+ *      from this sender has since arrived (see the comment at that step)
+ *   4. Fetches recent conversation history from D1
+ *   5. Pricing lookup — matches a brand tab (or the fallback tab for a
  *      generic pricing/repair enquiry) and builds pricing context (see
  *      pricing.js matchBrandTab / findFallbackTab / looksLikePricingEnquiry)
- *   5. Calls the configured LLM (see llm.js) with history + new message +
+ *   6. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
- *   6. Saves reply to D1
- *   7. Sends reply in natural parts with human-paced delays — BEFORE the
+ *   7. Saves reply to D1
+ *   8. Sends reply in natural parts with human-paced delays — BEFORE the
  *      escalation mute below, so an escalation notice always reaches the
  *      customer instead of getting caught by its own just-set mute
- *   8. Detects escalation trigger in reply, mutes and alerts staff if found
+ *   9. Detects escalation trigger in reply, mutes and alerts staff if found
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
  * entirely in index.js before this function is called. By the time
@@ -27,6 +29,7 @@ import {
   isEscalated,
   setManualMute,
   resolveEscalation,
+  getLatestUserMessageId,
 } from './db.js';
 
 import {
@@ -52,7 +55,7 @@ import { getSheetTabs, getPricingRows } from './googleSheets.js';
 // Only called with clean text at this point — all media routing happens
 // upstream in index.js before this is invoked.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function handleIncomingMessage({ senderId, incomingText, env }) {
+export async function handleIncomingMessage({ senderId, incomingText, env, messageRowId }) {
 
   // ── 1. Staff commands — from manager's personal number ───────────────────
   if (senderId === env.STAFF_WA_NUMBER) {
@@ -68,13 +71,42 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
     return;
   }
 
-  // ── 3. Fetch recent conversation history ──────────────────────────────────
+  // ── 3. Debounce — wait, then bail if a newer message has since arrived ───
+  // Each WhatsApp message is its own independent webhook call — nothing
+  // otherwise serializes two messages sent seconds apart from the same
+  // customer, so both would independently reach the LLM and both would
+  // reply, producing two separate (often near-duplicate) replies to what
+  // was really one burst of thought from the customer.
+  //
+  // messageRowId is this message's own conversations.id (see db.js
+  // saveMessage / getLatestUserMessageId). After waiting, if a newer user
+  // message for this sender now exists, this invocation quietly steps
+  // aside — the newest message's own invocation will do the same check,
+  // find itself still latest once nothing more arrives, and proceed with
+  // getRecentMessages() already covering the whole burst — so the customer
+  // gets exactly one reply that accounts for everything they sent.
+  //
+  // messageRowId may be absent (older callers, or a caption-derived message
+  // — see index.js) — debounce is skipped in that case rather than crashing.
+  if (messageRowId != null) {
+    await delay(Number(env.MESSAGE_DEBOUNCE_MS ?? 5000));
+
+    const latestId = await getLatestUserMessageId(env.DB, senderId);
+    if (latestId != null && latestId > messageRowId) {
+      console.log(`[Bot] ${senderId} sent a newer message during debounce — skipping, latest invocation will reply for the whole burst`);
+      return;
+    }
+  }
+
+  // ── 4. Fetch recent conversation history ──────────────────────────────────
   // Last 6 messages (3 exchanges) — enough context without ballooning token cost.
   // History includes D1 records of [Customer sent image] events so Gemini
-  // is aware that media was sent even if it couldn't read it.
+  // is aware that media was sent even if it couldn't read it. Thanks to the
+  // debounce above, this also naturally covers every message in a rapid
+  // burst — not just the latest one.
   const history = await getRecentMessages(env.DB, senderId, 6);
 
-  // ── 4. Pricing lookup — brand detected anywhere in the message ───────────
+  // ── 5. Pricing lookup — brand detected anywhere in the message ───────────
   // Fuzzy-matches the message against the spreadsheet's ACTUAL current tab
   // titles (not a hardcoded brand list), so a new brand tab just works with
   // no code change. Triggers on any message mentioning a brand — not just
@@ -108,7 +140,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
     console.error('[Bot] Pricing lookup failed:', err.message);
   }
 
-  // ── 5. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
+  // ── 6. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
   let aiReply;
   try {
     aiReply = await generateReply(history, incomingText, env, pricingContext);
@@ -117,11 +149,11 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
     aiReply = 'Maaf, ada gangguan teknikal sebentar. Team kami akan balas anda tidak lama lagi! 🙏';
   }
 
-  // ── 6. Save bot reply ─────────────────────────────────────────────────────
+  // ── 7. Save bot reply ─────────────────────────────────────────────────────
   await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
 
-  // ── 7. Send in natural parts with human-paced delays ─────────────────────
-  // Must happen BEFORE step 8 sets the mute flag below. sendInParts checks
+  // ── 8. Send in natural parts with human-paced delays ─────────────────────
+  // Must happen BEFORE step 9 sets the mute flag below. sendInParts checks
   // isEscalated() before every part it sends (see sendIfStillActive) — if
   // this reply is itself the one that triggers escalation, muting first
   // would make that check see its own just-set mute and silently drop the
@@ -130,7 +162,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env }) {
   // mute then only affects whatever comes after it.
   await sendInParts(senderId, aiReply, env);
 
-  // ── 8. Detect escalation trigger in reply ────────────────────────────────
+  // ── 9. Detect escalation trigger in reply ────────────────────────────────
   if (shouldEscalate(aiReply)) {
     await setManualMute(env.DB, senderId);
     await sendStaffAlert(

@@ -631,9 +631,9 @@ async function handlePostMessage(body, env) {
     const incomingText = message.text?.body?.trim();
     if (!incomingText) return;
 
-    await saveMessage(env.DB, { senderId, role: 'user', text: incomingText });
+    const messageRowId = await saveMessage(env.DB, { senderId, role: 'user', text: incomingText });
     await sendReadReceipt(messageId, env);
-    await handleIncomingMessage({ senderId, incomingText, env });
+    await handleIncomingMessage({ senderId, incomingText, env, messageRowId });
     return;
   }
 
@@ -643,7 +643,7 @@ async function handlePostMessage(body, env) {
     console.log(`[PostMessage] '${msgType}' with caption from ${senderId} — handling caption as text`);
 
     await sendReadReceipt(messageId, env);
-    await saveMessage(env.DB, { senderId, role: 'user', text: `[Sent ${msgType}] ${caption}` });
+    const messageRowId = await saveMessage(env.DB, { senderId, role: 'user', text: `[Sent ${msgType}] ${caption}` });
 
     await sendStaffAlert(
       `📎 *Media received from customer*\n\n` +
@@ -655,7 +655,7 @@ async function handlePostMessage(body, env) {
       env
     );
 
-    await handleIncomingMessage({ senderId, incomingText: caption, env });
+    await handleIncomingMessage({ senderId, incomingText: caption, env, messageRowId });
     return;
   }
 

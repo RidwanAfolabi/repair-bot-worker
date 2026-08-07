@@ -125,21 +125,46 @@ export async function initDb(db) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // saveMessage — persist a single message to the conversations table
+//
+// Returns the inserted row's id — used by bot.js's debounce check (see
+// getLatestUserMessageId below) to tell whether a given customer message is
+// still the newest one by the time its reply is about to be generated.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function saveMessage(db, { senderId, role, text, timestamp }) {
   // timestamp is optional — pass it when backfilling history sync so messages
   // keep their real device time instead of all landing at insert time.
+  let result;
   if (timestamp) {
-    await db
+    result = await db
       .prepare(`INSERT INTO conversations (sender_id, role, text, timestamp) VALUES (?, ?, ?, ?)`)
       .bind(senderId, role, text, timestamp)
       .run();
   } else {
-    await db
+    result = await db
       .prepare(`INSERT INTO conversations (sender_id, role, text) VALUES (?, ?, ?)`)
       .bind(senderId, role, text)
       .run();
   }
+  return result.meta.last_row_id;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getLatestUserMessageId — highest conversations.id among a sender's
+// 'user'-role messages. Used by bot.js's debounce check: if a customer sends
+// two messages in quick succession, each spawns its own independent webhook
+// invocation (nothing serializes them) — this lets a given invocation tell
+// whether a newer customer message has arrived since its own, so it can bail
+// out and let only the LATEST message's invocation actually reply, with full
+// context of everything in the burst.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getLatestUserMessageId(db, senderId) {
+  const row = await db
+    .prepare(`SELECT MAX(id) as maxId FROM conversations WHERE sender_id = ? AND role = 'user'`)
+    .bind(senderId)
+    .first();
+
+  return row?.maxId ?? null;
 }
 
 

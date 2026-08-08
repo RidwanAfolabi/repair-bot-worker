@@ -211,7 +211,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
 // Must match the exact phrase defined in prompt.js buildSystemPrompt()
 // ─────────────────────────────────────────────────────────────────────────────
 function shouldEscalate(reply) {
-  return reply.toLowerCase().includes('biar saya connectkan');
+  return reply.toLowerCase().includes('biar saya check dan update balik');
 }
 
 

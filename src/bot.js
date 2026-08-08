@@ -2,7 +2,7 @@
  * bot.js — AI bot handler
  *
  * For each incoming message:
- *   1. Checks for staff commands (!take, !done)
+ *   1. Checks for staff commands (!pause, !resume)
  *   2. Checks if sender is escalated — stays silent if so
  *   3. Debounce — waits MESSAGE_DEBOUNCE_MS, then bails if a newer message
  *      from this sender has since arrived (see the comment at that step)
@@ -30,6 +30,9 @@ import {
   setManualMute,
   resolveEscalation,
   getLatestUserMessageId,
+  getSetting,
+  setSetting,
+  getActiveMutes,
 } from './db.js';
 
 import {
@@ -195,7 +198,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
       `*Last message:* "${incomingText}"\n\n` +
       `👉 Open *WhatsApp Business App* and reply to this customer directly.\n\n` +
       `🤖 Bot is now *paused* — they will only see your replies.\n\n` +
-      `When done, send:\n*!done ${senderId}*\n...and the bot will resume.`,
+      `When done, send:\n*!resume ${senderId}*\n...and the bot will resume.`,
       env
     );
     console.log(`[Bot] Escalated ${senderId} to staff`);
@@ -218,8 +221,20 @@ function shouldEscalate(reply) {
 // notes (index.js). replyTo defaults to STAFF_WA_NUMBER but is decoupled
 // from the command's source so both channels can confirm to the same place.
 //
-// !take 60123456789  — manually pause bot for a customer
-// !done 60123456789  — resume bot for a customer after staff handled them
+// Per-customer:
+//   !pause 60123456789   — manually pause bot for one customer, indefinite
+//   !resume 60123456789  — resume bot for one customer
+//
+// Global (instant, no deploy needed — separate from BOT_ENABLED in
+// wrangler.jsonc, which remains a developer-level emergency stop underneath
+// this):
+//   !pauseall   — pause bot for every customer at once
+//   !resumeall  — resume bot for every customer
+//
+// Visibility:
+//   !status  — global state, LLM provider, count of paused customers
+//   !muted   — list of currently paused customers, with mute type and age
+//   !help    — this command list
 //
 // Returns true if the text was a recognised command, false otherwise.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,21 +243,86 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
   const cmd    = parts[0]?.toLowerCase();
   const target = parts[1];
 
-  if (cmd === '!take' && target) {
+  if (cmd === '!pause' && target) {
     await setManualMute(env.DB, target);
     await sendTextMessage(
       replyTo,
-      `✅ Bot paused for +${target} (stays off until !done — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
+      `✅ Bot paused for +${target} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
       env
     );
     return true;
   }
 
-  if (cmd === '!done' && target) {
+  if (cmd === '!resume' && target) {
     await resolveEscalation(env.DB, target);
     await sendTextMessage(replyTo, `✅ Bot resumed for +${target}.`, env);
     // No message sent to the customer here — resuming silently. A'aisyah
     // will only speak again once the customer sends their next message.
+    return true;
+  }
+
+  if (cmd === '!pauseall') {
+    await setSetting(env.DB, 'bot_enabled', 'false');
+    await sendTextMessage(replyTo, `🔴 Bot paused for ALL customers.\nSend !resumeall to turn back on.`, env);
+    return true;
+  }
+
+  if (cmd === '!resumeall') {
+    await setSetting(env.DB, 'bot_enabled', 'true');
+    await sendTextMessage(replyTo, `🟢 Bot resumed for all customers.`, env);
+    return true;
+  }
+
+  if (cmd === '!status') {
+    const globalSetting = await getSetting(env.DB, 'bot_enabled');
+    const globallyOn = globalSetting !== 'false' && env.BOT_ENABLED !== 'false';
+    const mutes = await getActiveMutes(env.DB);
+    const manualCount = mutes.filter(m => m.mute_type === 'manual').length;
+    const autoCount   = mutes.filter(m => m.mute_type === 'auto').length;
+
+    await sendTextMessage(
+      replyTo,
+      `📊 *Bot Status*\n\n` +
+      `Global: ${globallyOn ? '🟢 ON' : '🔴 OFF'}\n` +
+      `LLM: ${env.LLM_PROVIDER ?? 'gemini'}\n` +
+      `Paused customers: ${mutes.length} (${manualCount} manual, ${autoCount} auto-timing-out)`,
+      env
+    );
+    return true;
+  }
+
+  if (cmd === '!muted') {
+    const mutes = await getActiveMutes(env.DB);
+
+    if (mutes.length === 0) {
+      await sendTextMessage(replyTo, `No customers currently paused.`, env);
+      return true;
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const lines = mutes.map(m => {
+      const minutesAgo = Math.floor((nowSeconds - m.escalated_at) / 60);
+      const typeLabel  = m.mute_type === 'manual' ? 'manual' : 'auto';
+      return `+${m.sender_id} — ${typeLabel}, ${minutesAgo}m ago`;
+    });
+
+    await sendTextMessage(replyTo, `🔇 *Paused customers*\n\n${lines.join('\n')}`, env);
+    return true;
+  }
+
+  if (cmd === '!help') {
+    await sendTextMessage(
+      replyTo,
+      `🤖 *A'aisyah Commands*\n\n` +
+      `!pause <number> — pause bot for one customer (stays off until !resume)\n` +
+      `!resume <number> — resume bot for one customer\n\n` +
+      `!pauseall — pause bot for EVERYONE, instantly\n` +
+      `!resumeall — resume bot for everyone\n\n` +
+      `!status — quick overview\n` +
+      `!muted — list currently paused customers\n` +
+      `!help — this message`,
+      env
+    );
     return true;
   }
 

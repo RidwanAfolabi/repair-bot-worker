@@ -57,7 +57,7 @@ export async function initDb(db) {
     //   'auto'   — staff replied manually via WhatsApp Business App (Coexistence
     //              smb_message_echoes). Expires after MUTE_WINDOW_MINUTES of
     //              staff inactivity — bot resumes automatically, no action needed.
-    //   'manual' — staff explicitly sent !take. Never expires — only !done clears it.
+    //   'manual' — staff explicitly sent !pause. Never expires — only !resume clears it.
     // (Phase A would have added alert_sent, alert_sent_at, alert_retries here
     // — see suspended block near the bottom of this file)
     db.prepare(`
@@ -92,6 +92,20 @@ export async function initDb(db) {
         cache_key   TEXT PRIMARY KEY,
         cache_value TEXT NOT NULL,
         cached_at   INTEGER NOT NULL DEFAULT (unixepoch())
+      )
+    `),
+
+    // Bot-wide settings the manager controls directly via WhatsApp commands
+    // (!pauseall / !resumeall — see bot.js handleStaffCommand), separate
+    // from BOT_ENABLED in wrangler.jsonc. Two independent layers: this one
+    // is instant, no deploy needed; wrangler.jsonc's BOT_ENABLED remains a
+    // developer-level emergency stop underneath it. Bot replies only if
+    // both are enabled — see the kill switch in index.js.
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS bot_settings (
+        setting_key   TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL,
+        updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
       )
     `),
 
@@ -194,7 +208,7 @@ export async function getRecentMessages(db, senderId, limit = 6) {
 // isEscalated — check if a sender has been escalated to a human
 //
 // Bot stays silent when this returns true.
-// 'manual' mutes (staff sent !take) never expire on their own — only !done
+// 'manual' mutes (staff sent !pause) never expire on their own — only !resume
 // clears them. 'auto' mutes (staff replied via WhatsApp Business App) expire
 // after MUTE_WINDOW_MINUTES of staff inactivity — bot resumes automatically.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,8 +230,8 @@ export async function isEscalated(db, senderId, env) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// setManualMute — staff explicitly sent !take, or A'aisyah's own escalation
-// trigger fired. Never expires — only resolveEscalation (!done) clears it.
+// setManualMute — staff explicitly sent !pause, or A'aisyah's own escalation
+// trigger fired. Never expires — only resolveEscalation (!resume) clears it.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function setManualMute(db, senderId) {
   await db
@@ -310,7 +324,7 @@ export async function getStuckEscalations(db) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// resolveEscalation — staff types !done — bot resumes
+// resolveEscalation — staff types !resume — bot resumes
 // ─────────────────────────────────────────────────────────────────────────────
 export async function resolveEscalation(db, senderId) {
   await db
@@ -405,6 +419,51 @@ export async function setCache(db, key, value) {
     `)
     .bind(key, value)
     .run();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getSetting / setSetting — bot_settings key/value store, used by the
+// manager's !pauseall / !resumeall commands (see bot.js handleStaffCommand)
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getSetting(db, key) {
+  const row = await db
+    .prepare(`SELECT setting_value FROM bot_settings WHERE setting_key = ?`)
+    .bind(key)
+    .first();
+
+  return row?.setting_value ?? null;
+}
+
+export async function setSetting(db, key, value) {
+  await db
+    .prepare(`
+      INSERT INTO bot_settings (setting_key, setting_value, updated_at)
+      VALUES (?, ?, unixepoch())
+      ON CONFLICT(setting_key) DO UPDATE SET
+        setting_value = excluded.setting_value,
+        updated_at    = unixepoch()
+    `)
+    .bind(key, value)
+    .run();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getActiveMutes — every sender currently muted (escalated = 1), with mute
+// type and when it started. Powers the manager's !muted command.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getActiveMutes(db) {
+  const { results } = await db
+    .prepare(`
+      SELECT sender_id, mute_type, escalated_at
+      FROM escalations
+      WHERE escalated = 1
+      ORDER BY escalated_at DESC
+    `)
+    .all();
+
+  return results;
 }
 
 

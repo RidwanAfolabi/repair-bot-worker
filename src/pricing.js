@@ -154,6 +154,17 @@ const BRAND_ALIASES = {
   APPLE: 'IPHONE',
 };
 
+// Symbol-based shorthand that can't go through BRAND_ALIASES — normalize()
+// strips "+" as non-alphanumeric, so "1+" collapses to a bare "1" long
+// before matching happens, and "1" alone is far too generic to alias (it
+// would match model numbers, prices, note/version numbers, phone digits,
+// anything). Checked directly against the RAW customer text instead, before
+// normalization ever runs, so only this exact symbol shorthand is
+// special-cased rather than loosening digit matching in general.
+const SYMBOL_ALIASES = [
+  { pattern: /1\s*\+/, canonical: 'ONEPLUS' },
+];
+
 // Lightweight signal that a message is a pricing/repair enquiry at all —
 // used ONLY to decide whether to check the Services & Accessories fallback
 // tab when no brand was matched. Without this gate, every ordinary message
@@ -173,35 +184,89 @@ export function looksLikePricingEnquiry(text) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// tabMatchTokens — a tab title split into its individual matchable brand
+// tokens. Most tabs are a single brand ("iPhone", "Samsung") and produce one
+// token. Combined tabs ("Infinix / Tecno") are split on "/" so a customer
+// mentioning EITHER brand alone still matches — requiring the full
+// "INFINIX TECNO" phrase verbatim, which is what naive whole-title matching
+// required, essentially never occurs in real customer phrasing since a
+// customer names one brand at a time, not both joined together.
+// ─────────────────────────────────────────────────────────────────────────────
+function tabMatchTokens(tabTitle) {
+  return tabTitle
+    .split('/')
+    .map(part => normalize(part))
+    .filter(Boolean);
+}
+
+// tokenAppearsIn — the normal spaced substring check, plus a space-collapsed
+// fallback so a tab title with a space in it ("One Plus") still matches how
+// customers actually type the brand ("OnePlus", no space). The fallback is
+// additive — it never overrides a case where the spaced check already
+// matched, and doesn't change matching for any single-word tab name.
+function tokenAppearsIn(normText, token) {
+  if (normText.includes(token)) return true;
+  const collapsedToken = token.replace(/\s+/g, '');
+  if (collapsedToken.length === 0) return false;
+  return normText.replace(/\s+/g, '').includes(collapsedToken);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // matchBrandTab — fuzzy-match a customer's message against the spreadsheet's
 // REAL current tab titles (from googleSheets.js's getSheetTabs — always the
 // live list, not a hardcoded brand array, so a new tab just works).
 //
-// Direction of match: does the tab's name appear as a substring of the
-// customer's (normalized, alias-expanded) message? "SAMSUNG S20 MINI"
-// contains "SAMSUNG" — tab "Samsung" matches. If more than one tab matches
-// (shouldn't normally happen with distinct brand names), the longest/most
-// specific tab name wins as a tie-breaker.
+// Two passes:
+//   1. Direct — a token from the tab's own name literally appears in what
+//      the customer typed. Checked BEFORE alias expansion so an explicit
+//      mention (e.g. "iPad") always wins, rather than risking getting
+//      outvoted on the length tie-breaker by an alias-injected token (e.g.
+//      "Apple" -> "iPhone", when the customer already said "iPad").
+//   2. Alias — only tried if nothing matched directly. Handles brand names
+//      that never appear verbatim in the sheet (e.g. "Apple" implies
+//      "iPhone" when no specific Apple product was named) and symbol-based
+//      shorthand normalize() would otherwise destroy (e.g. "1+" for
+//      "OnePlus" — see SYMBOL_ALIASES).
+//
+// If more than one tab matches within a pass (shouldn't normally happen with
+// distinct brand names), the longest/most specific tab name wins as a
+// tie-breaker.
 //
 // Returns null if nothing matched — caller decides whether to check the
 // fallback tab or skip the lookup entirely.
 // ─────────────────────────────────────────────────────────────────────────────
 export function matchBrandTab(customerText, tabTitles) {
-  let normText = normalize(customerText);
+  const normText  = normalize(customerText);
+  const brandTabs = tabTitles.filter(t => normalize(t) !== FALLBACK_TAB_NAME);
 
+  const direct = brandTabs.filter(tab =>
+    tabMatchTokens(tab).some(tok => tokenAppearsIn(normText, tok))
+  );
+  if (direct.length > 0) {
+    direct.sort((a, b) => b.length - a.length);
+    return direct[0];
+  }
+
+  let aliasText = normText;
   for (const [alias, canonical] of Object.entries(BRAND_ALIASES)) {
     if (normText.includes(alias)) {
-      normText += ' ' + canonical;
+      aliasText += ' ' + canonical;
+    }
+  }
+  for (const { pattern, canonical } of SYMBOL_ALIASES) {
+    if (pattern.test(customerText)) {
+      aliasText += ' ' + canonical;
     }
   }
 
-  const brandTabs = tabTitles.filter(t => normalize(t) !== FALLBACK_TAB_NAME);
-  const matches = brandTabs.filter(tab => normText.includes(normalize(tab)));
+  const aliasMatches = brandTabs.filter(tab =>
+    tabMatchTokens(tab).some(tok => tokenAppearsIn(aliasText, tok))
+  );
+  if (aliasMatches.length === 0) return null;
 
-  if (matches.length === 0) return null;
-
-  matches.sort((a, b) => b.length - a.length);
-  return matches[0];
+  aliasMatches.sort((a, b) => b.length - a.length);
+  return aliasMatches[0];
 }
 
 
@@ -215,29 +280,36 @@ export function findFallbackTab(tabTitles) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// formatPricingContext — turn a matched tab's full row set into a block of
-// text appended to the system prompt (see prompt.js buildSystemPrompt).
+// formatPricingContext — turn one or more matched tabs' full row sets into a
+// block of text appended to the system prompt (see prompt.js
+// buildSystemPrompt). Takes an ARRAY of { tabName, rows } sections — bot.js
+// always looks up the matched brand tab together with the Services &
+// Accessories fallback tab in one pass (see bot.js step 5), so this needs to
+// combine both into a single block rather than handling one tab at a time.
 //
-// No tiers anymore — the LLM gets everything for the matched tab and finds
-// the specific item itself. The "don't guess, don't state RM0" rule is
-// stated directly alongside the data here, not just relied on from the
-// distant system-prompt-level rule, since that's more reliable for
-// instruction-following than a rule stated once, far away from the data
-// it actually governs.
+// No tiers — the LLM gets everything for the matched tab(s) and finds the
+// specific item itself. The "don't guess, don't state RM0" rule is stated
+// directly alongside the data here, not just relied on from the distant
+// system-prompt-level rule, since that's more reliable for
+// instruction-following than a rule stated once, far away from the data it
+// actually governs.
 // ─────────────────────────────────────────────────────────────────────────────
-export function formatPricingContext(tabName, rows) {
-  if (!rows || rows.length === 0) {
+export function formatPricingContext(sections) {
+  const nonEmpty = (sections ?? []).filter(s => s?.rows?.length > 0);
+
+  if (nonEmpty.length === 0) {
     return `## CURRENT PRICING (live lookup for this enquiry)\nNo pricing data available for this enquiry. Treat as unknown and follow the escalation approach.`;
   }
 
-  const list = rows
-    .map(r => `- ${r.description}: RM${r.price}`)
-    .join('\n');
+  const blocks = nonEmpty.map(({ tabName, rows }) => {
+    const list = rows.map(r => `- ${r.description}: RM${r.price}`).join('\n');
+    return `### ${tabName}\n${list}`;
+  });
 
-  return `## CURRENT PRICING — ${tabName} (live lookup for this enquiry)
-Below is the FULL current price list for ${tabName}. Carefully find the specific item that matches what the customer is asking about — their wording may be informal or phrased differently than how items are listed here.
+  return `## CURRENT PRICING (live lookup for this enquiry)
+Below is the FULL current price list for the relevant section(s). Carefully find the specific item that matches what the customer is asking about — their wording may be informal or phrased differently than how items are listed here.
 
-${list}
+${blocks.join('\n\n')}
 
 Rules for using this data:
 - Only state a price if you find a clear, specific match for what the customer described.

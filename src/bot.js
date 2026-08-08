@@ -243,7 +243,11 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
   const cmd    = parts[0]?.toLowerCase();
   const target = parts[1];
 
-  if (cmd === '!pause' && target) {
+  if (cmd === '!pause') {
+    if (!target) {
+      await sendTextMessage(replyTo, `⚠️ Missing number. Usage: !pause <number>\nExample: !pause 60123456789`, env);
+      return true;
+    }
     await setManualMute(env.DB, target);
     await sendTextMessage(
       replyTo,
@@ -253,7 +257,11 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
     return true;
   }
 
-  if (cmd === '!resume' && target) {
+  if (cmd === '!resume') {
+    if (!target) {
+      await sendTextMessage(replyTo, `⚠️ Missing number. Usage: !resume <number>\nExample: !resume 60123456789`, env);
+      return true;
+    }
     await resolveEscalation(env.DB, target);
     await sendTextMessage(replyTo, `✅ Bot resumed for +${target}.`, env);
     // No message sent to the customer here — resuming silently. A'aisyah
@@ -276,7 +284,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
   if (cmd === '!status') {
     const globalSetting = await getSetting(env.DB, 'bot_enabled');
     const globallyOn = globalSetting !== 'false' && env.BOT_ENABLED !== 'false';
-    const mutes = await getActiveMutes(env.DB);
+    const mutes = await getActiveMutes(env.DB, env);
     const manualCount = mutes.filter(m => m.mute_type === 'manual').length;
     const autoCount   = mutes.filter(m => m.mute_type === 'auto').length;
 
@@ -292,7 +300,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
   }
 
   if (cmd === '!muted') {
-    const mutes = await getActiveMutes(env.DB);
+    const mutes = await getActiveMutes(env.DB, env);
 
     if (mutes.length === 0) {
       await sendTextMessage(replyTo, `No customers currently paused.`, env);

@@ -450,10 +450,18 @@ export async function setSetting(db, key, value) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getActiveMutes — every sender currently muted (escalated = 1), with mute
-// type and when it started. Powers the manager's !muted command.
+// getActiveMutes — every sender currently muted, with mute type and when it
+// started. Powers the manager's !status and !muted commands.
+//
+// 'auto' mutes expire lazily — isEscalated() computes the MUTE_WINDOW_MINUTES
+// expiry live on every check rather than eagerly clearing the DB row, so a
+// stale 'auto' row can sit at escalated=1 in the table long after the bot
+// has already resumed replying to that customer. env is optional so callers
+// that don't have it (or don't care about that distinction) still get raw
+// results back, but !status/!muted always pass it so what staff sees matches
+// what the bot is actually doing.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function getActiveMutes(db) {
+export async function getActiveMutes(db, env) {
   const { results } = await db
     .prepare(`
       SELECT sender_id, mute_type, escalated_at
@@ -463,7 +471,16 @@ export async function getActiveMutes(db) {
     `)
     .all();
 
-  return results;
+  if (!env) return results;
+
+  const windowMinutes = Number(env.MUTE_WINDOW_MINUTES ?? 75);
+  const windowSeconds = windowMinutes * 60;
+  const nowSeconds    = Math.floor(Date.now() / 1000);
+
+  return results.filter(row => {
+    if (row.mute_type === 'manual') return true;
+    return (nowSeconds - row.escalated_at) < windowSeconds;
+  });
 }
 
 

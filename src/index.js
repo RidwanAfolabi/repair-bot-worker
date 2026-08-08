@@ -32,7 +32,7 @@
  */
 
 import { handleIncomingMessage, handleStaffCommand } from './bot.js';
-import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute } from './db.js';
+import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
 
 export default {
@@ -452,7 +452,7 @@ async function handlePostMessage(body, env) {
   // App Dashboard > WhatsApp > Configuration.
   //
   // Self-chat (from === to, staff messaging their own number) is routed
-  // through the shared staff-command parser instead — lets !take/!done be
+  // through the shared staff-command parser instead — lets !pause/!resume be
   // sent as a note-to-self inside WhatsApp Business App, no separate number
   // needed. Non-text self-chat notes are silently ignored (logged only) —
   // there is no delivery target that makes sense for a photo sent to self.
@@ -575,20 +575,6 @@ async function handlePostMessage(body, env) {
     return;
   }
 
-  // ── Kill switch ───────────────────────────────────────────────────────────
-  // Set BOT_ENABLED = "false" in wrangler.jsonc vars to silence A'aisyah's replies
-  // to customers instantly. Scoped to this point only — every Coexistence
-  // handler above (account_update, smb_message_echoes, smb_app_state_sync,
-  // history) has already returned by now, so the kill switch has no effect on
-  // onboarding/sync plumbing regardless of its value. Worker still
-  // acknowledges the webhook with 200 so Meta never flags the endpoint as
-  // down. Staff continue using WhatsApp Business App normally.
-  // To resume: set BOT_ENABLED = "true" and redeploy.
-  if (env.BOT_ENABLED === 'false') {
-    console.log('[PostMessage] Bot paused (BOT_ENABLED=false) — skipping customer reply');
-    return;
-  }
-
   const messages = value?.messages;
 
   // Ignore non-message webhooks (delivery receipts, read events, status updates)
@@ -603,6 +589,36 @@ async function handlePostMessage(body, env) {
   const messageId = message.id;
 
   console.log(`[PostMessage] '${msgType}' from ${senderId}`);
+
+  // ── Kill switch — two layers, both bypassed by staff ──────────────────────
+  // 1. BOT_ENABLED (wrangler.jsonc var) — developer-level emergency stop.
+  //    Requires a code edit + redeploy to flip either way.
+  // 2. bot_settings.bot_enabled (D1, via !pauseall / !resumeall) — manager-
+  //    level instant toggle, no deploy needed. See bot.js handleStaffCommand.
+  // Bot replies only if BOTH layers are enabled.
+  //
+  // Staff messages (STAFF_WA_NUMBER) always bypass both — otherwise a
+  // manager who sends !pauseall would have no way to send !resumeall
+  // afterward, since their own message would never reach the command
+  // parser. This check is deliberately placed here, after senderId is
+  // known, rather than earlier in the function, specifically to make that
+  // bypass possible. Every Coexistence handler above (account_update,
+  // smb_message_echoes, smb_app_state_sync, history) has already returned
+  // by this point regardless, so neither layer has any effect on
+  // onboarding/sync plumbing. Worker still acknowledges the webhook with
+  // 200 either way, so Meta never flags the endpoint as down.
+  if (senderId !== env.STAFF_WA_NUMBER) {
+    if (env.BOT_ENABLED === 'false') {
+      console.log('[PostMessage] Bot paused (BOT_ENABLED=false in wrangler.jsonc) — skipping customer reply');
+      return;
+    }
+
+    const globalSetting = await getSetting(env.DB, 'bot_enabled');
+    if (globalSetting === 'false') {
+      console.log('[PostMessage] Bot paused (manager sent !pauseall) — skipping customer reply');
+      return;
+    }
+  }
 
   // ── Test allowlist ─────────────────────────────────────────────────────────
   // Set TEST_ALLOWLIST in wrangler.jsonc vars to a comma-separated list of
@@ -651,7 +667,7 @@ async function handlePostMessage(body, env) {
       `*Type:* ${msgType}\n` +
       `*Caption:* "${caption}"\n\n` +
       `Please check WhatsApp Business App to view the ${msgType}.\n` +
-      `The bot is handling the text reply — intervene with *!take ${senderId}* if needed.`,
+      `The bot is handling the text reply — intervene with *!pause ${senderId}* if needed.`,
       env
     );
 
@@ -676,7 +692,7 @@ async function handlePostMessage(body, env) {
       `*Number:* +${senderId}\n\n` +
       `Please open WhatsApp Business App to view the ${msgType} and reply directly.\n\n` +
       `Bot has informed the customer that team will get back to them.\n` +
-      `Type *!take ${senderId}* to take over the conversation.`,
+      `Type *!pause ${senderId}* to take over the conversation.`,
       env
     );
 
@@ -704,7 +720,7 @@ async function handlePostMessage(body, env) {
       `*Number:* +${senderId}\n\n` +
       `Please open WhatsApp Business App to listen and reply.\n` +
       `Bot has asked customer to type if possible.\n` +
-      `Type *!take ${senderId}* to take over if needed.`,
+      `Type *!pause ${senderId}* to take over if needed.`,
       env
     );
 

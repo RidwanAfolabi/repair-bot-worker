@@ -54,10 +54,15 @@ export async function initDb(db) {
     // Escalation state per customer
     // escalated=1 means the bot stays silent for that sender_id.
     // mute_type distinguishes WHY:
-    //   'auto'   — staff replied manually via WhatsApp Business App (Coexistence
-    //              smb_message_echoes). Expires after MUTE_WINDOW_MINUTES of
-    //              staff inactivity — bot resumes automatically, no action needed.
-    //   'manual' — staff explicitly sent !pause. Never expires — only !resume clears it.
+    //   'auto'   — either staff replied via WhatsApp Business App (Coexistence
+    //              smb_message_echoes), or the bot itself escalated (unknown
+    //              price, ambiguous message, etc — see bot.js shouldEscalate).
+    //              Expires after MUTE_WINDOW_MINUTES of inactivity — bot
+    //              resumes on its own, no action needed. If it escalates
+    //              again after resuming, this just refreshes the same timer.
+    //   'manual' — staff explicitly sent !pause. Never expires — only !resume
+    //              clears it. The one case that requires deliberate staff
+    //              action to set; everything else self-resolves.
     // (Phase A would have added alert_sent, alert_sent_at, alert_retries here
     // — see suspended block near the bottom of this file)
     db.prepare(`
@@ -209,8 +214,9 @@ export async function getRecentMessages(db, senderId, limit = 6) {
 //
 // Bot stays silent when this returns true.
 // 'manual' mutes (staff sent !pause) never expire on their own — only !resume
-// clears them. 'auto' mutes (staff replied via WhatsApp Business App) expire
-// after MUTE_WINDOW_MINUTES of staff inactivity — bot resumes automatically.
+// clears them. 'auto' mutes (staff replied via WhatsApp Business App, OR the
+// bot's own escalation trigger fired) expire after MUTE_WINDOW_MINUTES of
+// inactivity — bot resumes automatically, no staff action required.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function isEscalated(db, senderId, env) {
   const row = await db
@@ -230,8 +236,11 @@ export async function isEscalated(db, senderId, env) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// setManualMute — staff explicitly sent !pause, or A'aisyah's own escalation
-// trigger fired. Never expires — only resolveEscalation (!resume) clears it.
+// setManualMute — staff explicitly sent !pause. This is the ONLY caller that
+// should ever set 'manual' — everything else (staff app replies, the bot's
+// own escalation trigger) goes through refreshAutoMute below instead, so it
+// self-resolves after MUTE_WINDOW_MINUTES rather than needing !resume.
+// Never expires — only resolveEscalation (!resume) clears it.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function setManualMute(db, senderId) {
   await db
@@ -250,9 +259,12 @@ export async function setManualMute(db, senderId) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// refreshAutoMute — staff replied manually via WhatsApp Business App.
-// Resets the mute window unless the customer is already under a 'manual'
-// mute, which always takes priority and must not be downgraded to 'auto'.
+// refreshAutoMute — either staff replied via WhatsApp Business App, or the
+// bot's own escalation trigger fired (see bot.js shouldEscalate). Both cases
+// are self-resolving, not permanent — resets the mute window, expiring after
+// MUTE_WINDOW_MINUTES of inactivity, unless the customer is already under a
+// 'manual' mute (explicit !pause), which always takes priority and must not
+// be downgraded to 'auto'.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function refreshAutoMute(db, senderId) {
   await db

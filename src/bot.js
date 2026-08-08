@@ -16,7 +16,8 @@
  *   8. Sends reply in natural parts with human-paced delays — BEFORE the
  *      escalation mute below, so an escalation notice always reaches the
  *      customer instead of getting caught by its own just-set mute
- *   9. Detects escalation trigger in reply, mutes and alerts staff if found
+ *   9. Detects escalation trigger in reply — auto-mutes (self-resolving
+ *      after MUTE_WINDOW_MINUTES, not permanent) and alerts staff if found
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
  * entirely in index.js before this function is called. By the time
@@ -28,6 +29,7 @@ import {
   saveMessage,
   isEscalated,
   setManualMute,
+  refreshAutoMute,
   resolveEscalation,
   getLatestUserMessageId,
   getSetting,
@@ -190,18 +192,29 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   await sendInParts(senderId, aiReply, env);
 
   // ── 9. Detect escalation trigger in reply ────────────────────────────────
+  // Auto mute, not manual — the bot decided this on its own (unknown price,
+  // ambiguous message, etc.), so it should be able to try again once
+  // MUTE_WINDOW_MINUTES passes, rather than staying silent for that customer
+  // forever unless staff remembers to type !resume. If staff genuinely wants
+  // it to stay off, that's what !pause is for — refreshAutoMute already
+  // preserves an existing 'manual' mute rather than downgrading it (see
+  // db.js), so a !pause always wins over this. If the bot escalates again
+  // after resuming (still can't help), this fires again and simply resets
+  // the same timer — see the ## ESCALATION prompt note about not repeating
+  // the exact same message verbatim on a repeat.
   if (shouldEscalate(aiReply)) {
-    await setManualMute(env.DB, senderId);
+    await refreshAutoMute(env.DB, senderId);
+    const windowMinutes = Number(env.MUTE_WINDOW_MINUTES ?? 75);
     await sendStaffAlert(
       `🚨 *Customer needs attention*\n\n` +
       `*Number:* +${senderId}\n` +
       `*Last message:* "${incomingText}"\n\n` +
       `👉 Open *WhatsApp Business App* and reply to this customer directly.\n\n` +
-      `🤖 Bot is now *paused* — they will only see your replies.\n\n` +
-      `When done, send:\n*!resume ${senderId}*\n...and the bot will resume.`,
+      `🤖 Bot is paused for this customer for ${windowMinutes} minutes, then resumes on its own if untouched.\n` +
+      `Replying via the app resets that timer. To keep it off indefinitely instead, send *!pause ${senderId}* — or *!resume ${senderId}* to bring it back sooner.`,
       env
     );
-    console.log(`[Bot] Escalated ${senderId} to staff`);
+    console.log(`[Bot] Escalated ${senderId} to staff (auto mute, ${windowMinutes}m)`);
   }
 }
 

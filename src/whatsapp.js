@@ -5,6 +5,12 @@
  *   - One place to update if Meta changes their API version
  *   - Consistent error logging across all outbound calls
  *   - Easy to mock in tests
+ *
+ * PLATFORM LIMIT: the Cloud API cannot send a message to the same phone
+ * number it sends from (the number tied to WA_PHONE_NUMBER_ID) — self-sends
+ * fail to deliver even though the call itself may not throw. This matters
+ * most for STAFF_WA_NUMBER under Coexistence — see the note at the top of
+ * index.js and the runtime warning in its smb_message_echoes handler.
  */
 
 const GRAPH_API_VERSION = 'v21.0';

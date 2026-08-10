@@ -23,7 +23,17 @@
  *   WA_VERIFY_TOKEN    — Secret string set when registering webhook in Meta portal
  *   WA_PHONE_NUMBER_ID — Phone Number ID from Meta Developer → WhatsApp → API Setup
  *   GEMINI_API_KEY     — Google Gemini API key (aistudio.google.com)
- *   STAFF_WA_NUMBER       — Manager's personal WhatsApp for escalation alerts
+ *   STAFF_WA_NUMBER       — Manager's personal WhatsApp for escalation alerts.
+ *                           MUST be a different number from the one connected
+ *                           via Coexistence (the number tied to
+ *                           WA_PHONE_NUMBER_ID). WhatsApp's Cloud API cannot
+ *                           send a message to the same number it sends from —
+ *                           set this to the connected number itself and every
+ *                           reply (command confirmations, escalation alerts)
+ *                           silently fails to deliver, even though commands
+ *                           sent FROM that number (via self-chat) still
+ *                           arrive fine. See the smb_message_echoes handler
+ *                           below for the runtime warning that catches this.
  *   META_APP_ID            — Your Meta App ID (App Dashboard → Settings → Basic)
  *   META_APP_SECRET        — Your Meta App Secret (same page, click Show)
  *   EMBEDDED_SIGNUP_URL    — The Meta-hosted Embedded Signup link (from Meta portal)
@@ -466,6 +476,26 @@ async function handlePostMessage(body, env) {
       if (!from || !to) continue;
 
       if (from === to) {
+        // from (=== to) is the actual Coexistence-connected number, straight
+        // from Meta's own webhook payload — ground truth, unlike anything we
+        // could infer from env vars alone. If STAFF_WA_NUMBER has been set to
+        // this same number, every confirmation/alert sent to it below (and
+        // every future sendStaffAlert call) will silently fail to deliver —
+        // WhatsApp's Cloud API cannot send a message to the same number it
+        // sends from. Self-chat commands still arrive fine (this is a
+        // client-side WhatsApp Business App feature, unrelated to Cloud API
+        // send permissions), so the failure is one-directional and easy to
+        // miss without this warning.
+        if (env.STAFF_WA_NUMBER === from) {
+          console.warn(
+            `[Webhook] STAFF_WA_NUMBER (${env.STAFF_WA_NUMBER}) is the same number as this WhatsApp ` +
+            `connection (Coexistence). Commands sent from here will still be received, but every reply — ` +
+            `command confirmations, escalation alerts — will silently fail to deliver, because the Cloud ` +
+            `API cannot send a message to the same number it sends from. Set STAFF_WA_NUMBER to a different ` +
+            `number (e.g. the manager's personal phone) to actually receive them.`
+          );
+        }
+
         const text = echoType === 'text' ? echo?.text?.body?.trim() : null;
         if (text) {
           const handled = await handleStaffCommand(text, env, env.STAFF_WA_NUMBER);

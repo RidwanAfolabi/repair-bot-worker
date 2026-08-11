@@ -11,6 +11,8 @@
  *
  * Media handling summary:
  *   reaction        → silently ignored, no reply
+ *   edit (text recovered) → handled by bot as normal, same as a fresh text message
+ *   edit (no text recoverable) / unsupported+edit → silently ignored, no reply
  *   text            → handled by bot as normal
  *   image/video/doc with caption → caption handled as text, staff alerted
  *   image/video/doc without caption → customer notified, staff alerted
@@ -669,6 +671,52 @@ async function handlePostMessage(body, env) {
   // ── Silently ignored types ────────────────────────────────────────────────
   if (msgType === 'reaction' || msgType === 'sticker') {
     console.log(`[PostMessage] Ignoring '${msgType}' from ${senderId} — no reply`);
+    return;
+  }
+
+  // ── Edited messages ───────────────────────────────────────────────────────
+  // Two shapes exist for this, confirmed by checking Meta's own webhook
+  // reference rather than assuming:
+  //   msgType === 'edit' — the real, content-bearing shape. Per Meta's docs
+  //     this is "only available to WhatsApp Business app users," i.e.
+  //     Coexistence numbers — which is what this bot runs on. Confirmed
+  //     live via real webhook traffic on this account (previously logged as
+  //     "Unhandled message type 'edit' — ignoring"). edit.message carries
+  //     the updated content, mirroring the standard { type, [type]: {...} }
+  //     shape used everywhere else in this API. Meta's reference only shows
+  //     a media (image caption) example, not text — the RAW payload log
+  //     below exists to confirm the text shape from real traffic; remove it
+  //     once confirmed.
+  //   msgType === 'unsupported' && unsupported.type === 'edit' — the
+  //     contentless fallback Meta uses on non-Coexistence numbers. Kept here
+  //     only as a defensive no-op — on this account edits are expected to
+  //     always arrive as the content-bearing 'edit' shape above.
+  // If real text can't be recovered (non-text edit, or the contentless
+  // fallback), do nothing and let the conversation continue normally — no
+  // customer message, no staff alert. Deliberately not treated as an error.
+  if (msgType === 'edit' || (msgType === 'unsupported' && message.unsupported?.type === 'edit')) {
+    const editedType = message.edit?.message?.type;
+
+    if (msgType === 'edit') {
+      // TEMPORARY — remove once the text-edit field shape is confirmed from real traffic
+      console.log(`[PostMessage] RAW edit payload from ${senderId}: ${JSON.stringify(message.edit)}`);
+    }
+
+    const editedText = editedType === 'text' ? message.edit?.message?.text?.body?.trim() : null;
+
+    if (editedText) {
+      console.log(`[PostMessage] 'edit' from ${senderId} — recovered new text, handling as a normal message`);
+      const messageRowId = await saveMessage(env.DB, {
+        senderId,
+        role: 'user',
+        text: `[Customer edited their previous message] ${editedText}`,
+      });
+      await sendReadReceipt(messageId, env);
+      await handleIncomingMessage({ senderId, incomingText: editedText, env, messageRowId });
+      return;
+    }
+
+    console.log(`[PostMessage] '${msgType}' edit from ${senderId} — no usable text, ignoring`);
     return;
   }
 

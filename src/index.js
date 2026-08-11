@@ -679,14 +679,12 @@ async function handlePostMessage(body, env) {
   // reference rather than assuming:
   //   msgType === 'edit' — the real, content-bearing shape. Per Meta's docs
   //     this is "only available to WhatsApp Business app users," i.e.
-  //     Coexistence numbers — which is what this bot runs on. Confirmed
-  //     live via real webhook traffic on this account (previously logged as
-  //     "Unhandled message type 'edit' — ignoring"). edit.message carries
-  //     the updated content, mirroring the standard { type, [type]: {...} }
-  //     shape used everywhere else in this API. Meta's reference only shows
-  //     a media (image caption) example, not text — the RAW payload log
-  //     below exists to confirm the text shape from real traffic; remove it
-  //     once confirmed.
+  //     Coexistence numbers — which is what this bot runs on. edit.message
+  //     carries the updated content, mirroring the standard
+  //     { type, [type]: {...} } shape used everywhere else in this API —
+  //     for text, that's edit.message.text.body. Confirmed against real
+  //     webhook traffic on this account (Meta's own reference only shows a
+  //     media/image-caption example, not text).
   //   msgType === 'unsupported' && unsupported.type === 'edit' — the
   //     contentless fallback Meta uses on non-Coexistence numbers. Kept here
   //     only as a defensive no-op — on this account edits are expected to
@@ -696,11 +694,6 @@ async function handlePostMessage(body, env) {
   // customer message, no staff alert. Deliberately not treated as an error.
   if (msgType === 'edit' || (msgType === 'unsupported' && message.unsupported?.type === 'edit')) {
     const editedType = message.edit?.message?.type;
-
-    if (msgType === 'edit') {
-      // TEMPORARY — remove once the text-edit field shape is confirmed from real traffic
-      console.log(`[PostMessage] RAW edit payload from ${senderId}: ${JSON.stringify(message.edit)}`);
-    }
 
     const editedText = editedType === 'text' ? message.edit?.message?.text?.body?.trim() : null;
 

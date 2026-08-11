@@ -262,9 +262,18 @@ export async function setManualMute(db, senderId) {
 // refreshAutoMute — either staff replied via WhatsApp Business App, or the
 // bot's own escalation trigger fired (see bot.js shouldEscalate). Both cases
 // are self-resolving, not permanent — resets the mute window, expiring after
-// MUTE_WINDOW_MINUTES of inactivity, unless the customer is already under a
-// 'manual' mute (explicit !pause), which always takes priority and must not
-// be downgraded to 'auto'.
+// MUTE_WINDOW_MINUTES of inactivity, unless the customer is under a
+// CURRENTLY ACTIVE 'manual' mute (explicit !pause not yet !resume'd), which
+// always takes priority and must not be downgraded to 'auto'.
+//
+// Deliberately checks escalated = 1 alongside mute_type = 'manual' here, not
+// mute_type alone — resolveEscalation (!resume) clears escalated but leaves
+// mute_type on the row untouched, so a sender_id that was ever manually
+// paused, even once, keeps that column set to 'manual' in D1 forever. Without
+// the escalated = 1 check, that stale value would keep getting inherited by
+// every future, unrelated escalation episode for that same sender — locking
+// them into permanent manual mutes despite never being re-!pause'd. This
+// only preserves 'manual' when there's an active mute in force right now.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function refreshAutoMute(db, senderId) {
   await db
@@ -275,7 +284,11 @@ export async function refreshAutoMute(db, senderId) {
         escalated    = 1,
         escalated_at = unixepoch(),
         resolved_at  = NULL,
-        mute_type    = CASE WHEN escalations.mute_type = 'manual' THEN 'manual' ELSE 'auto' END
+        mute_type    = CASE
+                          WHEN escalations.mute_type = 'manual' AND escalations.escalated = 1
+                          THEN 'manual'
+                          ELSE 'auto'
+                        END
     `)
     .bind(senderId)
     .run();

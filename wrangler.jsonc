@@ -58,7 +58,7 @@
     	"BOT_ENABLED": "true",
 		"TEST_ALLOWLIST": "601123139568,2347015759242,601153696696,601115420094",
 		"MUTE_WINDOW_MINUTES": "75",
-		"LLM_PROVIDER": "gemini",
+		"LLM_PROVIDER": "claude",
 		"GEMINI_MODEL": "gemini-3.1-flash-lite",
 		"CLAUDE_MODEL": "claude-sonnet-5",
 		"GOOGLE_SHEET_ID": "1nivMpkhXgaXbOGkMYLq2E9aj20L6UO1a27lXc0vYYrA",

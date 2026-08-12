@@ -13,11 +13,15 @@
  *   6. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
  *   7. Saves reply to D1
- *   8. Sends reply in natural parts with human-paced delays — BEFORE the
- *      escalation mute below, so an escalation notice always reaches the
- *      customer instead of getting caught by its own just-set mute
- *   9. Detects escalation trigger in reply — auto-mutes (self-resolving
- *      after MUTE_WINDOW_MINUTES, not permanent) and alerts staff if found
+ *   8. Detects escalation trigger in reply — auto-mutes (self-resolving
+ *      after MUTE_WINDOW_MINUTES, not permanent) and alerts staff if found.
+ *      Runs BEFORE the human-paced sends below, while the invocation still
+ *      has most of Cloudflare's 30s waitUntil() budget left, rather than
+ *      risking cancellation after ~16s of pacing delays
+ *   9. Sends reply in natural parts with human-paced delays — told to
+ *      bypass its own escalation guard when this exact reply is the one
+ *      that just triggered step 8, so the escalation notice always reaches
+ *      the customer instead of getting caught by its own just-set mute
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
  * entirely in index.js before this function is called. By the time
@@ -93,8 +97,15 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   //
   // messageRowId may be absent (older callers, or a caption-derived message
   // — see index.js) — debounce is skipped in that case rather than crashing.
+  //
+  // Default trimmed from 5000ms to 4000ms — this delay, plus sendInParts'
+  // human-paced sends further down, all share Cloudflare's 30-second
+  // waitUntil() ceiling (counted from webhook receipt, not from here) —
+  // see the sendInParts comment for the full budget breakdown. Shrinking
+  // this loses a little burst-catching margin for rapid-fire messages sent
+  // further apart than 4s, in exchange for headroom against that ceiling.
   if (messageRowId != null) {
-    await delay(Number(env.MESSAGE_DEBOUNCE_MS ?? 5000));
+    await delay(Number(env.MESSAGE_DEBOUNCE_MS ?? 4000));
 
     const latestId = await getLatestUserMessageId(env.DB, senderId);
     if (latestId != null && latestId > messageRowId) {
@@ -181,28 +192,27 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // ── 7. Save bot reply ─────────────────────────────────────────────────────
   await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
 
-  // ── 8. Send in natural parts with human-paced delays ─────────────────────
-  // Must happen BEFORE step 9 sets the mute flag below. sendInParts checks
-  // isEscalated() before every part it sends (see sendIfStillActive) — if
-  // this reply is itself the one that triggers escalation, muting first
-  // would make that check see its own just-set mute and silently drop the
-  // very message that's supposed to tell the customer "connecting you now."
-  // Sending first guarantees the escalation notice always reaches them; the
-  // mute then only affects whatever comes after it.
-  await sendInParts(senderId, aiReply, env);
-
-  // ── 9. Detect escalation trigger in reply ────────────────────────────────
+  // ── 8. Detect escalation trigger and mute/alert EARLY ────────────────────
+  // Moved ahead of sendInParts (used to run after it) so the actual mute D1
+  // write and staff alert happen while the invocation still has nearly the
+  // full 30s waitUntil() budget available, rather than being squeezed in
+  // after ~16s of human-paced sends plus a variable-length LLM call. A slow
+  // reply used to risk Cloudflare cancelling this step entirely — the bot
+  // would tell the customer it's escalating, but never actually mute or
+  // notify staff. See the sendInParts comment for the full budget picture.
+  //
   // Auto mute, not manual — the bot decided this on its own (unknown price,
   // ambiguous message, etc.), so it should be able to try again once
   // MUTE_WINDOW_MINUTES passes, rather than staying silent for that customer
   // forever unless staff remembers to type !resume. If staff genuinely wants
   // it to stay off, that's what !pause is for — refreshAutoMute already
-  // preserves an existing 'manual' mute rather than downgrading it (see
-  // db.js), so a !pause always wins over this. If the bot escalates again
-  // after resuming (still can't help), this fires again and simply resets
-  // the same timer — see the ## ESCALATION prompt note about not repeating
-  // the exact same message verbatim on a repeat.
-  if (shouldEscalate(aiReply)) {
+  // preserves an existing, currently-active 'manual' mute rather than
+  // downgrading it (see db.js), so a !pause always wins over this. If the
+  // bot escalates again after resuming (still can't help), this fires again
+  // and simply resets the same timer — see the ## ESCALATION prompt note
+  // about not repeating the exact same message verbatim on a repeat.
+  const willEscalate = shouldEscalate(aiReply);
+  if (willEscalate) {
     await refreshAutoMute(env.DB, senderId);
     const windowMinutes = Number(env.MUTE_WINDOW_MINUTES ?? 75);
     await sendStaffAlert(
@@ -216,6 +226,18 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     );
     console.log(`[Bot] Escalated ${senderId} to staff (auto mute, ${windowMinutes}m)`);
   }
+
+  // ── 9. Send in natural parts with human-paced delays ─────────────────────
+  // willEscalate is passed through so sendInParts can bypass its own
+  // isEscalated guard for THIS specific send — otherwise, now that the mute
+  // above runs first, that guard would see its own just-set mute and
+  // silently drop the very message announcing it (the bug this ordering
+  // originally avoided). Bypassing only when this reply is the one that
+  // caused the mute guarantees the escalation notice always reaches the
+  // customer; for an ordinary reply the guard stays fully active, still
+  // protecting against a genuinely concurrent, unrelated mute (e.g. staff
+  // replying via the app mid-send).
+  await sendInParts(senderId, aiReply, env, willEscalate);
 }
 
 
@@ -360,16 +382,29 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 // like a person reading your message, thinking, then typing a response.
 //
 // Delay strategy:
-//   First message  — 3–5 seconds (simulates reading the customer's message
+//   First message  — 2–3 seconds (simulates reading the customer's message
 //                    and starting to compose a reply)
 //   Between parts  — scales with the length of the NEXT chunk
-//                    (~55ms per character, capped between 2s and 5s)
+//                    (~55ms per character, capped between 1s and 4s)
 //                    longer message = took longer to type
 //
 // A small random jitter (±500ms) is added to each delay so the timing
 // never feels mechanical or perfectly consistent — real humans aren't.
+//
+// Trimmed 1s off every step of this budget (was 3-5s first message, 2-5s
+// between parts) specifically to buy back margin against Cloudflare's 30s
+// waitUntil() ceiling — see the MESSAGE_DEBOUNCE_MS comment in
+// handleIncomingMessage for the full picture of what shares that budget.
+//
+// bypassEscalationGuard — true only when this exact reply is the one that
+// just triggered escalation (see step 8/9 in handleIncomingMessage, which
+// mutes BEFORE calling this). Without it, the guard below would see its
+// own just-set mute and drop the very message announcing the escalation.
+// For an ordinary reply this stays false and the guard behaves exactly as
+// before — still protecting against a genuinely concurrent, unrelated mute
+// (e.g. staff replying via the app mid-send).
 // ─────────────────────────────────────────────────────────────────────────────
-async function sendInParts(to, text, env) {
+async function sendInParts(to, text, env, bypassEscalationGuard = false) {
   const parts = text
     .split(/\n\n+/)
     .map(p => p.trim())
@@ -378,9 +413,10 @@ async function sendInParts(to, text, env) {
   // Guards against the customer getting muted (staff took over) mid-send —
   // e.g. staff replies via WhatsApp Business App while A'aisyah is still
   // drip-feeding a multi-part reply. Re-checks escalation state right
-  // before each part goes out and drops anything still queued.
+  // before each part goes out and drops anything still queued. Skipped
+  // entirely when bypassEscalationGuard is true — see above.
   const sendIfStillActive = async (part) => {
-    if (await isEscalated(env.DB, to, env)) {
+    if (!bypassEscalationGuard && await isEscalated(env.DB, to, env)) {
       console.log(`[Bot] ${to} got muted mid-send — dropping remaining reply`);
       return false;
     }
@@ -390,7 +426,7 @@ async function sendInParts(to, text, env) {
 
   // Single part — pause as if reading + composing, then send
   if (parts.length === 1) {
-    await delay(jitter(3500));   // ~3–4 seconds before first reply
+    await delay(jitter(2500));   // ~2–3 seconds before first reply
     await sendIfStillActive(parts[0]);
     return;
   }
@@ -399,12 +435,12 @@ async function sendInParts(to, text, env) {
   for (let i = 0; i < parts.length; i++) {
     if (i === 0) {
       // First message — longer pause (read customer message → start typing)
-      await delay(jitter(3500));  // ~3–4 seconds
+      await delay(jitter(2500));  // ~2–3 seconds
     } else {
       // Subsequent messages — scale with the length of this part
-      // ~55ms per character, capped between 2000ms and 5000ms
+      // ~55ms per character, capped between 1000ms and 4000ms
       // Then add random jitter so it never feels robotic
-      const base = Math.min(5000, Math.max(2000, parts[i].length * 55));
+      const base = Math.min(4000, Math.max(1000, parts[i].length * 55));
       await delay(jitter(base));
     }
 

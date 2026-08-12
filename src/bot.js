@@ -7,9 +7,11 @@
  *   3. Debounce — waits MESSAGE_DEBOUNCE_MS, then bails if a newer message
  *      from this sender has since arrived (see the comment at that step)
  *   4. Fetches recent conversation history from D1
- *   5. Pricing lookup — matches a brand tab (or the fallback tab for a
- *      device-agnostic enquiry only) and builds pricing context (see
- *      pricing.js matchBrandTab / findFallbackTab / looksLikeDeviceAgnosticEnquiry)
+ *   5. Pricing lookup — matches a brand tab (falling back unconditionally
+ *      to a brand mentioned earlier in history if the current message has
+ *      none of its own), or the fallback tab for a device-agnostic
+ *      enquiry, and builds pricing context (see pricing.js matchBrandTab /
+ *      matchBrandFromHistory / findFallbackTab / looksLikeDeviceAgnosticEnquiry)
  *   6. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
  *   7. Saves reply to D1
@@ -50,6 +52,7 @@ import { generateReply } from './llm.js';
 
 import {
   matchBrandTab,
+  matchBrandFromHistory,
   findFallbackTab,
   looksLikeDeviceAgnosticEnquiry,
   formatPricingContext,
@@ -149,9 +152,30 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // predictable, constant cost on every pricing enquiry beats a second,
   // probabilistic LLM round-trip).
   //
-  // No brand match, but the message only needs a device-agnostic answer
-  // (see looksLikeDeviceAgnosticEnquiry in pricing.js — cables, protectors,
-  // deposits, chargers) → fetch just the fallback tab, same as before.
+  // No brand in the current message → check recent history for the last
+  // brand mentioned and reuse that tab, unconditionally (no length/keyword
+  // gate on when to try this). Fixes a real gap: a brand named at the start
+  // of a conversation used to become unreachable the moment a later message
+  // didn't repeat it, even though the conversation was still clearly about
+  // that device — the LLM would lose the ability to quote a price it could
+  // see moments earlier. Bounded by the same history window already
+  // fetched above (HISTORY_MESSAGE_LIMIT) — once the mention scrolls out,
+  // this naturally stops finding it too, no separate expiry needed.
+  //
+  // Deliberately not gated by message length or a "does this look like a
+  // follow-up" heuristic — a rule-based gate here risks under-triggering on
+  // a genuine continuation, and a missed continuation means no pricing data
+  // reaches the LLM, which is a worse failure mode (it may escalate
+  // unnecessarily, thinking it has nothing to offer) than the cost of an
+  // occasional irrelevant price list on an unrelated message. That cost is
+  // already covered by formatPricingContext's "if nothing here clearly
+  // matches, treat as unknown" instruction, which keeps the LLM from
+  // actually answering with mismatched data.
+  //
+  // No brand match (current or history), but the message only needs a
+  // device-agnostic answer (see looksLikeDeviceAgnosticEnquiry in
+  // pricing.js — cables, protectors, deposits, chargers) → fetch just the
+  // fallback tab, same as before.
   //
   // No brand match AND not device-agnostic (e.g. "berapa harga tukar
   // skrin" — a real repair question, just missing which device) →
@@ -167,7 +191,15 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   let pricingContext = '';
   try {
     const tabs = await getSheetTabs(env);
-    const brandTab = matchBrandTab(incomingText, tabs);
+    let brandTab = matchBrandTab(incomingText, tabs);
+
+    if (!brandTab) {
+      brandTab = matchBrandFromHistory(history, tabs);
+      if (brandTab) {
+        console.log(`[Bot] ${senderId} — no brand in current message, reusing "${brandTab}" from earlier in the conversation`);
+      }
+    }
+
     const fallbackTab = findFallbackTab(tabs);
 
     let targetTabs = [];

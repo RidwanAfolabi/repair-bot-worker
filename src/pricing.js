@@ -165,21 +165,32 @@ const SYMBOL_ALIASES = [
   { pattern: /1\s*\+/, canonical: 'ONEPLUS' },
 ];
 
-// Lightweight signal that a message is a pricing/repair enquiry at all —
-// used ONLY to decide whether to check the Services & Accessories fallback
-// tab when no brand was matched. Without this gate, every ordinary message
-// ("hi", "what time do you close") would trigger a fallback-tab fetch and
-// injection for no reason. This is a judgment-call keyword list, not
+// Signal that a message can be answered WITHOUT knowing the device brand —
+// cables, protectors, deposits, chargers. Used ONLY to decide whether to
+// check the Services & Accessories fallback tab when no brand was matched.
+// Without this gate, every ordinary message ("hi", "what time do you
+// close") would trigger a fallback-tab fetch and injection for no reason.
+//
+// Deliberately NOT included here: generic pricing/repair words ("harga",
+// "repair", "rosak", "tukar", "service", etc.) on their own. A message like
+// "berapa harga tukar skrin" with no brand can't actually be answered from
+// the fallback tab anyway — screen/battery/etc. repairs are priced per
+// brand and model, not something Services & Accessories covers. Fetching
+// that tab in this case used to hand the LLM a pile of irrelevant
+// accessories data instead of the brand it actually needs, and gave the
+// (false) impression enough context had been provided. Now, with no brand
+// match AND no device-agnostic word, pricingContext just stays empty — see
+// bot.js step 5 — and the LLM's own "## ASKING FOR DEVICE DETAILS" prompt
+// guidance asks for brand/model/damage type instead of guessing from data
+// that doesn't apply. This is a judgment-call keyword list, not
 // empirically tuned — worth adjusting once real traffic shows its gaps.
-const ENQUIRY_SIGNAL_WORDS = [
-  'HARGA', 'PRICE', 'BERAPA', 'HOW MUCH', 'COST',
-  'REPAIR', 'BAIKI', 'FIX', 'ROSAK', 'SPOIL', 'TUKAR', 'REPLACE',
-  'SERVICE', 'CABLE', 'KABEL', 'PROTECTOR', 'DEPOSIT', 'CHARGER', 'CAS',
+const DEVICE_AGNOSTIC_SIGNAL_WORDS = [
+  'CABLE', 'KABEL', 'PROTECTOR', 'DEPOSIT', 'CHARGER', 'CAS',
 ];
 
-export function looksLikePricingEnquiry(text) {
+export function looksLikeDeviceAgnosticEnquiry(text) {
   const norm = normalize(text);
-  return ENQUIRY_SIGNAL_WORDS.some(word => norm.includes(normalize(word)));
+  return DEVICE_AGNOSTIC_SIGNAL_WORDS.some(word => norm.includes(normalize(word)));
 }
 
 

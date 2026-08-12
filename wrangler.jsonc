@@ -57,7 +57,7 @@
 
     	"BOT_ENABLED": "true",
 		"TEST_ALLOWLIST": "601123139568,2347015759242,601153696696,601115420094",
-		"MUTE_WINDOW_MINUTES": "75",
+		"MUTE_WINDOW_MINUTES": "1", // default is 75 for now, just testing with 1 minute
 		"LLM_PROVIDER": "claude",
 		"GEMINI_MODEL": "gemini-3.1-flash-lite",
 		"CLAUDE_MODEL": "claude-sonnet-5",

@@ -8,8 +8,8 @@
  *      from this sender has since arrived (see the comment at that step)
  *   4. Fetches recent conversation history from D1
  *   5. Pricing lookup — matches a brand tab (or the fallback tab for a
- *      generic pricing/repair enquiry) and builds pricing context (see
- *      pricing.js matchBrandTab / findFallbackTab / looksLikePricingEnquiry)
+ *      device-agnostic enquiry only) and builds pricing context (see
+ *      pricing.js matchBrandTab / findFallbackTab / looksLikeDeviceAgnosticEnquiry)
  *   6. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
  *   7. Saves reply to D1
@@ -51,7 +51,7 @@ import { generateReply } from './llm.js';
 import {
   matchBrandTab,
   findFallbackTab,
-  looksLikePricingEnquiry,
+  looksLikeDeviceAgnosticEnquiry,
   formatPricingContext,
 } from './pricing.js';
 
@@ -144,9 +144,17 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // predictable, constant cost on every pricing enquiry beats a second,
   // probabilistic LLM round-trip).
   //
-  // No brand AND no pricing/repair signal word (see ENQUIRY_SIGNAL_WORDS in
-  // pricing.js) → skipped entirely, e.g. "hi", "what time do you close" —
-  // no reason to inject fallback-tab contents into every single message.
+  // No brand match, but the message only needs a device-agnostic answer
+  // (see looksLikeDeviceAgnosticEnquiry in pricing.js — cables, protectors,
+  // deposits, chargers) → fetch just the fallback tab, same as before.
+  //
+  // No brand match AND not device-agnostic (e.g. "berapa harga tukar
+  // skrin" — a real repair question, just missing which device) →
+  // pricingContext stays empty on purpose. Fetching the fallback tab here
+  // would only hand the LLM irrelevant accessories data and risk it trying
+  // to answer from that instead of asking for the device — see the
+  // "## ASKING FOR DEVICE DETAILS" prompt section, which is what actually
+  // handles this case now.
   //
   // Any failure here (sheet unreachable, no match, bad auth) falls back to
   // an empty pricingContext — the LLM still replies from its own prompt/
@@ -160,7 +168,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     let targetTabs = [];
     if (brandTab) {
       targetTabs = fallbackTab ? [brandTab, fallbackTab] : [brandTab];
-    } else if (looksLikePricingEnquiry(incomingText)) {
+    } else if (looksLikeDeviceAgnosticEnquiry(incomingText)) {
       targetTabs = fallbackTab ? [fallbackTab] : [];
     }
 

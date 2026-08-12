@@ -282,6 +282,31 @@ export function matchBrandTab(customerText, tabTitles) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// matchBrandFromHistory — walk backward through recent conversation history
+// (most recent first) and return the first brand tab matchBrandTab finds.
+// Lets a brand mentioned earlier in the conversation stay available for a
+// later message that doesn't repeat it ("berapa", "ok confirm boleh").
+// Called unconditionally whenever the current message has no brand of its
+// own — no length/keyword gate on top, deliberately: a heuristic here risks
+// under-triggering on a genuine continuation, which is worse than the cost
+// of an occasional irrelevant price list — formatPricingContext's existing
+// "if nothing here clearly matches, treat as unknown" instruction already
+// covers that. Naturally bounded by whatever history the caller passes in
+// (bot.js currently fetches up to HISTORY_MESSAGE_LIMIT messages) — once a
+// mention scrolls out of that window, this stops finding it too, with no
+// separate expiry logic needed; it just inherits the same memory horizon
+// the LLM itself already has.
+// ─────────────────────────────────────────────────────────────────────────────
+export function matchBrandFromHistory(history, tabTitles) {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const match = matchBrandTab(history[i]?.text ?? '', tabTitles);
+    if (match) return match;
+  }
+  return null;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // findFallbackTab — locate the Services & Accessories tab among the real
 // tab titles (case-insensitive, tolerant of minor formatting differences)
 // ─────────────────────────────────────────────────────────────────────────────

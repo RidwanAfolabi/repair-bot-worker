@@ -115,17 +115,22 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   }
 
   // ── 4. Fetch recent conversation history ──────────────────────────────────
-  // Default 16 messages (8 exchanges) — a real support conversation (device
-  // details -> pricing -> branch -> wrap-up) commonly runs 5-8 exchanges, so
-  // the previous default of 6 (3 exchanges) was losing the opening context
-  // partway through an ordinary conversation, causing the LLM to re-ask
-  // things the customer already answered. Higher token cost per call is the
-  // tradeoff — tune via HISTORY_MESSAGE_LIMIT if that becomes a concern.
+  // Default 32 messages (16 exchanges) — raised from 16 after a real
+  // conversation confirmed the failure mode directly: a customer stated
+  // their branch in their very first message, and much later in a long
+  // conversation asked about location again, the LLM had no memory of it
+  // and asked which area they were in, having already scrolled past the
+  // 16-message window. This is a plain SQL LIMIT — a conversation shorter
+  // than the limit just returns what exists, so this only costs anything
+  // (more tokens, slightly higher LLM latency) for conversations that
+  // actually run this long; short ones are unaffected either way. Tune via
+  // HISTORY_MESSAGE_LIMIT if that cost becomes a concern, or if
+  // conversations regularly run even longer than this.
   // History includes D1 records of [Customer sent image] events so Gemini
   // is aware that media was sent even if it couldn't read it. Thanks to the
   // debounce above, this also naturally covers every message in a rapid
   // burst — not just the latest one.
-  const history = await getRecentMessages(env.DB, senderId, Number(env.HISTORY_MESSAGE_LIMIT ?? 16));
+  const history = await getRecentMessages(env.DB, senderId, Number(env.HISTORY_MESSAGE_LIMIT ?? 32));
 
   // ── 5. Pricing lookup — brand detected anywhere in the message ───────────
   // Fuzzy-matches the message against the spreadsheet's ACTUAL current tab

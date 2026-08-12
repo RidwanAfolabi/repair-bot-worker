@@ -63,7 +63,7 @@
 		"CLAUDE_MODEL": "claude-sonnet-5",
 		"GOOGLE_SHEET_ID": "1nivMpkhXgaXbOGkMYLq2E9aj20L6UO1a27lXc0vYYrA",
 		"MESSAGE_DEBOUNCE_MS": "4000",
-		"HISTORY_MESSAGE_LIMIT": "16"
+		"HISTORY_MESSAGE_LIMIT": "32"
 	}
 	/**
 	 * Static Assets

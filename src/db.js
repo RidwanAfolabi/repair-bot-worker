@@ -30,7 +30,7 @@ export async function initDb(db) {
       CREATE TABLE IF NOT EXISTS conversations (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         sender_id   TEXT    NOT NULL,
-        role        TEXT    NOT NULL CHECK(role IN ('user', 'assistant')),
+        role        TEXT    NOT NULL CHECK(role IN ('customer', 'ai-assistant', 'staff')),
         text        TEXT    NOT NULL,
         timestamp   INTEGER NOT NULL DEFAULT (unixepoch()),
         escalated   INTEGER NOT NULL DEFAULT 0
@@ -170,16 +170,16 @@ export async function saveMessage(db, { senderId, role, text, timestamp }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getLatestUserMessageId — highest conversations.id among a sender's
-// 'user'-role messages. Used by bot.js's debounce check: if a customer sends
-// two messages in quick succession, each spawns its own independent webhook
-// invocation (nothing serializes them) — this lets a given invocation tell
-// whether a newer customer message has arrived since its own, so it can bail
-// out and let only the LATEST message's invocation actually reply, with full
-// context of everything in the burst.
+// 'customer'-role messages. Used by bot.js's debounce check: if a customer
+// sends two messages in quick succession, each spawns its own independent
+// webhook invocation (nothing serializes them) — this lets a given
+// invocation tell whether a newer customer message has arrived since its
+// own, so it can bail out and let only the LATEST message's invocation
+// actually reply, with full context of everything in the burst.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function getLatestUserMessageId(db, senderId) {
   const row = await db
-    .prepare(`SELECT MAX(id) as maxId FROM conversations WHERE sender_id = ? AND role = 'user'`)
+    .prepare(`SELECT MAX(id) as maxId FROM conversations WHERE sender_id = ? AND role = 'customer'`)
     .bind(senderId)
     .first();
 
@@ -192,13 +192,26 @@ export async function getLatestUserMessageId(db, senderId) {
 //
 // Returns them in chronological order (oldest first) so they can be
 // passed directly to the LLM as conversation history.
+//
+// Ordered by timestamp with id as a tiebreaker, NOT timestamp alone.
+// timestamp is second-granularity (unixepoch()), and several messages
+// routinely land in the same second — a customer's burst, or a reply saved
+// moments after the message that prompted it. Among rows sharing a
+// timestamp SQLite is free to return any order, which silently scrambled
+// the history handed to the LLM. id is INTEGER PRIMARY KEY AUTOINCREMENT,
+// so it strictly follows insertion order and breaks those ties correctly.
+//
+// timestamp stays the PRIMARY sort key on purpose: history-sync backfill
+// (see index.js) inserts genuinely old messages with brand-new high ids,
+// carrying their real Meta timestamps — sorting by id first would drag
+// those to the wrong end of the conversation.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function getRecentMessages(db, senderId, limit = 6) {
   const { results } = await db
     .prepare(`
       SELECT role, text FROM conversations
       WHERE sender_id = ?
-      ORDER BY timestamp DESC
+      ORDER BY timestamp DESC, id DESC
       LIMIT ?
     `)
     .bind(senderId, limit)
@@ -386,7 +399,9 @@ export async function getTodaysConversations(db) {
       SELECT sender_id, role, text, timestamp
       FROM conversations
       WHERE timestamp >= unixepoch('now', 'start of day')
-      ORDER BY timestamp ASC
+      -- id tiebreaker: see getRecentMessages above for why timestamp alone
+      -- is not a stable sort here
+      ORDER BY timestamp ASC, id ASC
     `)
     .all();
 
@@ -569,8 +584,8 @@ export async function getActiveEscalations(db) {
       FROM escalations e
       LEFT JOIN conversations c ON c.id = (
         SELECT id FROM conversations
-        WHERE sender_id = e.sender_id AND role = 'user'
-        ORDER BY timestamp DESC LIMIT 1
+        WHERE sender_id = e.sender_id AND role = 'customer'
+        ORDER BY timestamp DESC, id DESC LIMIT 1
       )
       WHERE e.escalated = 1
       ORDER BY e.escalated_at ASC
@@ -597,10 +612,10 @@ export async function getTodayConversationList(db) {
         MAX(c.timestamp) as last_active,
         (SELECT text FROM conversations
          WHERE sender_id = c.sender_id
-         ORDER BY timestamp DESC LIMIT 1) as last_message,
+         ORDER BY timestamp DESC, id DESC LIMIT 1) as last_message,
         (SELECT role FROM conversations
          WHERE sender_id = c.sender_id
-         ORDER BY timestamp DESC LIMIT 1) as last_role,
+         ORDER BY timestamp DESC, id DESC LIMIT 1) as last_role,
         COALESCE(e.escalated, 0) as is_escalated
       FROM conversations c
       LEFT JOIN escalations e ON e.sender_id = c.sender_id
@@ -621,7 +636,7 @@ export async function getConversationThread(db, senderId, limit = 50) {
       SELECT role, text, timestamp
       FROM conversations
       WHERE sender_id = ?
-      ORDER BY timestamp ASC
+      ORDER BY timestamp ASC, id ASC
       LIMIT ?
     `)
     .bind(senderId, limit)

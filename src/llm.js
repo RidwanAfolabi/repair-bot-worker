@@ -9,8 +9,13 @@
  *
  * Every provider adapter shares the same contract:
  *   input:  (history, newMessage, env, pricingContext)
- *     history         — array of { role: 'user' | 'assistant', text } from
- *                        D1, oldest first (see db.js getRecentMessages)
+ *     history         — array of { role: 'customer' | 'ai-assistant' | 'staff',
+ *                        text } from D1, oldest first (see db.js
+ *                        getRecentMessages). Both Gemini and Claude's APIs
+ *                        only support two structural roles — see
+ *                        toApiRole/toApiText below for how the third value
+ *                        (staff) is preserved as a content-level signal
+ *                        instead, since the API itself has no slot for it.
  *     pricingContext   — optional block of live price-lookup text (see
  *                        pricing.js formatPricingContext), appended to the
  *                        system prompt for this reply only. Defaults to ''.
@@ -39,19 +44,40 @@ export async function generateReply(history, newMessage, env, pricingContext = '
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// toApiRole / toApiText — shared by both adapters below.
+//
+// Neither Gemini's nor Claude's API has a structural third role — both only
+// support exactly two (user/model, user/assistant). 'ai-assistant' and
+// 'staff' both collapse to the non-customer API role. To keep the LLM able
+// to actually tell them apart — the whole point of the DB having three
+// values now — a staff-authored turn gets a plain text marker prepended to
+// its content instead. See the "## STAFF REPLIES" prompt section for what
+// the LLM is told to do with that marker; it must never surface to the
+// customer, since it's purely an internal signal for the model's own reasoning.
+// ─────────────────────────────────────────────────────────────────────────────
+function toApiRole(dbRole) {
+  return dbRole === 'customer' ? 'user' : 'assistant';
+}
+
+function toApiText(dbRole, text) {
+  return dbRole === 'staff' ? `[Staff replied] ${text}` : text;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // callGemini — call Google Gemini
 //
 // Key differences from Claude/OpenAI format:
-//   - 'assistant' role must be sent as 'model'
+//   - non-customer role must be sent as 'model'
 //   - System prompt goes in systemInstruction, not in messages array
 //   - Response text is nested at candidates[0].content.parts[0].text
 // ─────────────────────────────────────────────────────────────────────────────
 async function callGemini(history, newMessage, env, pricingContext) {
 
-  // Convert history to Gemini format — 'assistant' → 'model'
+  // Convert history to Gemini format — see toApiRole/toApiText above
   const geminiHistory = history.map(m => ({
-    role:  m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.text }],
+    role:  toApiRole(m.role) === 'assistant' ? 'model' : 'user',
+    parts: [{ text: toApiText(m.role, m.text) }],
   }));
 
   const contents = [
@@ -100,8 +126,10 @@ async function callGemini(history, newMessage, env, pricingContext) {
 // Key differences from Gemini's format, handled here so the rest of the
 // codebase doesn't need to care:
 //   - System prompt is a top-level `system` param, not part of `messages`
-//   - 'assistant' role stays as-is (D1 already stores it this way — no
-//     mapping needed, unlike Gemini's 'model' rename)
+//   - Role must be translated (see toApiRole above) — Claude's API hard-
+//     rejects anything other than the literal strings "user"/"assistant",
+//     so D1's three role values ('customer'/'ai-assistant'/'staff') cannot
+//     be passed through directly
 //   - max_tokens is required, not optional
 //   - Response text is at content[0].text (content is an array of blocks)
 //
@@ -125,7 +153,7 @@ async function callGemini(history, newMessage, env, pricingContext) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function callClaude(history, newMessage, env, pricingContext) {
   const messages = [
-    ...history.map(m => ({ role: m.role, content: m.text })),
+    ...history.map(m => ({ role: toApiRole(m.role), content: toApiText(m.role, m.text) })),
     { role: 'user', content: newMessage },
   ];
 

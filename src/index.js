@@ -399,6 +399,17 @@ async function handlePostMessage(body, env) {
   // Helps diagnose onboarding webhooks. Safe to keep in production (low noise).
   console.log(`[Webhook] field: ${field ?? 'unknown'}, event: ${value?.event ?? 'none'}`);
 
+  // ── Delisted numbers — computed once, used by every handler below ────────
+  // Set DELISTED_NUMBERS in wrangler.jsonc vars to a comma-separated list of
+  // numbers that should never be processed at all, in any form — no D1
+  // record (customer messages OR staff echoes), no read receipt, no AI
+  // reply, regardless of BOT_ENABLED/TEST_ALLOWLIST state. Staff handle
+  // these entirely outside the bot, for numbers where an AI reply was never
+  // going to be appropriate. Deliberately absolute, not staff-bypassed —
+  // unlike TEST_ALLOWLIST below, this isn't a testing-scope restriction,
+  // it's "this number should be invisible to the bot, full stop."
+  const delisted = (env.DELISTED_NUMBERS ?? '').split(',').map(n => n.trim()).filter(Boolean);
+
   // ── Full raw payload dump — TEMPORARY, remove once portfolio ID field is found ──
   if (field === 'account_update') {
     console.log(`[Webhook] RAW account_update payload: ${JSON.stringify(body)}`);
@@ -477,6 +488,15 @@ async function handlePostMessage(body, env) {
       const echoType = echo?.type;
       if (!from || !to) continue;
 
+      // Delisted numbers — never stored or processed, even a staff member's
+      // own manual reply to one. Checked before self-chat too, though a
+      // delisted customer number would never realistically coincide with
+      // the business's own connected number anyway.
+      if (delisted.includes(to)) {
+        console.log(`[Webhook] smb_message_echoes — ${to} is delisted, ignoring this echo entirely`);
+        continue;
+      }
+
       if (from === to) {
         // from (=== to) is the actual Coexistence-connected number, straight
         // from Meta's own webhook payload — ground truth, unlike anything we
@@ -513,7 +533,7 @@ async function handlePostMessage(body, env) {
         : `[Staff sent a ${echoType} via WhatsApp Business App]`;
 
       if (text) {
-        await saveMessage(env.DB, { senderId: to, role: 'assistant', text });
+        await saveMessage(env.DB, { senderId: to, role: 'staff', text });
         await refreshAutoMute(env.DB, to);
       }
     }
@@ -579,7 +599,7 @@ async function handlePostMessage(body, env) {
               continue;
             }
 
-            const role = msg?.from === customerId ? 'user' : 'assistant';
+            const role = msg?.from === customerId ? 'customer' : 'staff'; // predates A'aisyah — non-customer here was always a human
             const text = msg?.type === 'text'
               ? msg?.text?.body?.trim()
               : `[${msg?.type} message from history sync]`;
@@ -621,6 +641,11 @@ async function handlePostMessage(body, env) {
   const messageId = message.id;
 
   console.log(`[PostMessage] '${msgType}' from ${senderId}`);
+
+  if (delisted.includes(senderId)) {
+    console.log(`[PostMessage] ${senderId} is delisted — ignoring entirely, no read receipt, no D1 record`);
+    return;
+  }
 
   // ── Kill switch — two layers, both bypassed by staff ──────────────────────
   // 1. BOT_ENABLED (wrangler.jsonc var) — developer-level emergency stop.
@@ -701,7 +726,7 @@ async function handlePostMessage(body, env) {
       console.log(`[PostMessage] 'edit' from ${senderId} — recovered new text, handling as a normal message`);
       const messageRowId = await saveMessage(env.DB, {
         senderId,
-        role: 'user',
+        role: 'customer',
         text: `[Customer edited their previous message] ${editedText}`,
       });
       await sendReadReceipt(messageId, env);
@@ -718,7 +743,7 @@ async function handlePostMessage(body, env) {
     const incomingText = message.text?.body?.trim();
     if (!incomingText) return;
 
-    const messageRowId = await saveMessage(env.DB, { senderId, role: 'user', text: incomingText });
+    const messageRowId = await saveMessage(env.DB, { senderId, role: 'customer', text: incomingText });
     await sendReadReceipt(messageId, env);
     await handleIncomingMessage({ senderId, incomingText, env, messageRowId });
     return;
@@ -730,7 +755,7 @@ async function handlePostMessage(body, env) {
     console.log(`[PostMessage] '${msgType}' with caption from ${senderId} — handling caption as text`);
 
     await sendReadReceipt(messageId, env);
-    const messageRowId = await saveMessage(env.DB, { senderId, role: 'user', text: `[Sent ${msgType}] ${caption}` });
+    const messageRowId = await saveMessage(env.DB, { senderId, role: 'customer', text: `[Sent ${msgType}] ${caption}` });
 
     await sendStaffAlert(
       `📎 *Media received from customer*\n\n` +
@@ -769,7 +794,7 @@ async function handlePostMessage(body, env) {
 
     await saveMessage(env.DB, {
       senderId,
-      role: 'user',
+      role: 'customer',
       text: `[Customer sent a ${msgType} — staff alerted to view and respond]`,
     });
 
@@ -797,7 +822,7 @@ async function handlePostMessage(body, env) {
 
     await saveMessage(env.DB, {
       senderId,
-      role: 'user',
+      role: 'customer',
       text: '[Customer sent a voice note — staff alerted, customer asked to type]',
     });
 

@@ -235,7 +235,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   }
 
   // ── 7. Save bot reply ─────────────────────────────────────────────────────
-  await saveMessage(env.DB, { senderId, role: 'assistant', text: aiReply });
+  await saveMessage(env.DB, { senderId, role: 'ai-assistant', text: aiReply });
 
   // ── 8. Detect escalation trigger and mute/alert EARLY ────────────────────
   // Moved ahead of sendInParts (used to run after it) so the actual mute D1

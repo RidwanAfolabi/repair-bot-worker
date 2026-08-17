@@ -44,8 +44,19 @@
  */
 
 import { handleIncomingMessage, handleStaffCommand } from './bot.js';
-import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting } from './db.js';
+import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting, purgeOldConversations } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cron schedules — must match the strings in wrangler.jsonc EXACTLY.
+//
+// controller.cron is compared character-for-character, so a single stray
+// space here means the schedule falls through to the default branch in
+// scheduled() below instead of running its job.
+// ─────────────────────────────────────────────────────────────────────────────
+const CRON_RETENTION_PURGE = '0 18 * * *';  // 2:00am Malaysia
+const CRON_DAILY_SUMMARY   = '0 13 * * *';  // 9:00pm Malaysia — not built yet
+
 
 export default {
   async fetch(request, env, ctx) {
@@ -120,7 +131,100 @@ export default {
 
     return new Response('Method not allowed', { status: 405 });
   },
+
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // scheduled — cron entry point, shared by more than one job
+  //
+  // This worker's cron slot is NOT single-purpose, so every branch keys off
+  // controller.cron rather than assuming why it woke up:
+  //
+  //   0 18 * * *  (2am MYT)  — data retention purge. Deliberately at a dead
+  //                            hour: it deletes rows and should never contend
+  //                            with live customer traffic.
+  //
+  //   0 13 * * *  (9pm MYT)  — RESERVED for the daily enquiry summary to the
+  //                            staff number: how many customers, notable
+  //                            enquiries, stats worth pushing to external
+  //                            sources. Timed for the end of the 10am-9:30pm
+  //                            trading day so it covers a full day, which is
+  //                            why it belongs at 9pm and the purge does not.
+  //                            NOT built yet, and deliberately NOT registered
+  //                            in wrangler.jsonc — an unhandled schedule would
+  //                            just wake the worker daily to do nothing.
+  //                            Groundwork already exists in db.js:
+  //                            getTodaysConversations, getTodayConversationList
+  //                            and getActiveEscalations, all currently uncalled.
+  //                            To ship it: add the string to wrangler.jsonc's
+  //                            crons array and fill in the case below.
+  //
+  // Deliberately does its own initDb() — a cron invocation is a completely
+  // separate entry point from fetch(), so it cannot assume any request has
+  // run first (a freshly deployed worker whose first event is the cron would
+  // otherwise hit tables that do not exist yet).
+  // ───────────────────────────────────────────────────────────────────────────
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil((async () => {
+      if (!env.DB) {
+        console.error('[Cron] env.DB undefined — job skipped');
+        return;
+      }
+
+      try {
+        await initDb(env.DB);
+
+        switch (controller.cron) {
+          case CRON_RETENTION_PURGE:
+            await runRetentionPurge(env);
+            break;
+
+          case CRON_DAILY_SUMMARY:
+            // Intentionally empty until the daily summary is built. Logged so
+            // a prematurely-registered schedule is obvious rather than silent.
+            console.log('[Cron] Daily summary schedule fired but is not implemented yet — nothing to do');
+            break;
+
+          default:
+            // Falls through to the purge on purpose. controller.cron is
+            // matched character-for-character, so one stray space in
+            // wrangler.jsonc would otherwise silently stop the retention job
+            // — the one job with a published privacy-policy commitment behind
+            // it. Running the purge at an unintended hour is harmless (it is
+            // idempotent and only touches rows already past the window);
+            // never running it is not.
+            console.warn(`[Cron] Unrecognised schedule "${controller.cron}" — check it matches wrangler.jsonc exactly. Running retention purge as a fail-safe.`);
+            await runRetentionPurge(env);
+        }
+      } catch (err) {
+        console.error(`[Cron] Schedule "${controller.cron}" failed:`, err.message);
+      }
+    })());
+  },
 };
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runRetentionPurge — delete conversation logs past the retention window
+//
+// Backs the privacy policy's commitment that "conversation logs are retained
+// for a maximum of 12 months and then deleted". Without this the promise is
+// unenforced: nothing else in the system ever deletes a conversation row.
+//
+// Window is CONVERSATION_RETENTION_DAYS, defaulting to 365. If that value is
+// ever changed, the privacy policy's stated period must change to match, and
+// vice versa — the two are a pair.
+// ─────────────────────────────────────────────────────────────────────────────
+async function runRetentionPurge(env) {
+  const retentionDays = Number(env.CONVERSATION_RETENTION_DAYS ?? 365);
+  const result = await purgeOldConversations(env.DB, retentionDays);
+
+  // Logged on every run, including no-op runs, so the job going quiet is as
+  // visible in the logs as the job doing work.
+  console.log(
+    `[Cron] Retention purge (${retentionDays}d, cutoff ${new Date(result.cutoff * 1000).toISOString()}) — ` +
+    `${result.conversationsDeleted} conversation(s), ${result.escalationsDeleted} orphaned escalation(s) deleted`
+  );
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -19,15 +19,20 @@
  *      matchBrandFromHistory / findFallbackTab / looksLikeDeviceAgnosticEnquiry)
  *   7. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
- *   8. Saves reply to D1
- *   9. Detects escalation trigger in reply — auto-mutes (self-resolving
+ *   8. Extracts a completed repair booking from the reply if A'aisyah just
+ *      closed one out, and strips its [INTAKE] marker block so the marker
+ *      reaches neither D1 nor the customer (see parseIntakeBlock)
+ *   9. Saves reply to D1
+ *  10. Records the booking in the intakes table and alerts staff, same as
+ *      an escalation alert. Runs early for the same budget reason as below
+ *  11. Detects escalation trigger in reply — auto-mutes (self-resolving
  *      after MUTE_WINDOW_MINUTES, not permanent) and alerts staff if found.
  *      Runs BEFORE the human-paced sends below, while the invocation still
  *      has most of Cloudflare's 30s waitUntil() budget left, rather than
  *      risking cancellation after ~16s of pacing delays
- *  10. Sends reply in natural parts with human-paced delays — told to
+ *  12. Sends reply in natural parts with human-paced delays — told to
  *      bypass its own escalation guard when this exact reply is the one
- *      that just triggered step 9, so the escalation notice always reaches
+ *      that just triggered step 11, so the escalation notice always reaches
  *      the customer instead of getting caught by its own just-set mute
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
@@ -47,6 +52,7 @@ import {
   getSetting,
   setSetting,
   getActiveMutes,
+  saveIntake,
 } from './db.js';
 
 import {
@@ -340,10 +346,36 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     aiReply = 'Maaf, ada gangguan teknikal sebentar. Team kami akan balas anda tidak lama lagi! 🙏';
   }
 
-  // ── 8. Save bot reply ─────────────────────────────────────────────────────
+  // ── 8. Extract a completed booking, and strip its marker from the reply ──
+  // Runs before the save below so the [INTAKE] block never enters
+  // conversation history — see parseIntakeBlock for why that matters.
+  // aiReply is reassigned to the cleaned text from here on, so every
+  // downstream step (save, escalation check, send) works on what the
+  // customer will actually see.
+  const { intake, cleanedReply } = parseIntakeBlock(aiReply);
+  aiReply = cleanedReply;
+
+  // ── 9. Save bot reply ─────────────────────────────────────────────────────
   await saveMessage(env.DB, { senderId, role: 'ai-assistant', text: aiReply });
 
-  // ── 9. Detect escalation trigger and mute/alert EARLY ────────────────────
+  // ── 10. Record the booking and tell staff ────────────────────────────────
+  // Placed here for the same reason as the escalation block below: the D1
+  // write and the staff alert are the parts that must not be lost, so they
+  // run while the invocation still has most of its waitUntil() budget rather
+  // than after ~16s of human-paced sends. Wrapped so a failure here can
+  // never cost the customer their reply — they were just told their booking
+  // is confirmed, and going silent on them would be the worst outcome.
+  if (intake) {
+    try {
+      const intakeId = await saveIntake(env.DB, { senderId, ...intake });
+      await sendStaffAlert(formatIntakeAlert(senderId, intake), env);
+      console.log(`[Bot] Recorded intake #${intakeId} for ${senderId} — fields: ${Object.keys(intake).join(', ')}`);
+    } catch (err) {
+      console.error(`[Bot] Intake capture failed for ${senderId}:`, err.message);
+    }
+  }
+
+  // ── 11. Detect escalation trigger and mute/alert EARLY ────────────────────
   // Moved ahead of sendInParts (used to run after it) so the actual mute D1
   // write and staff alert happen while the invocation still has nearly the
   // full 30s waitUntil() budget available, rather than being squeezed in
@@ -378,7 +410,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     console.log(`[Bot] Escalated ${senderId} to staff (auto mute, ${windowMinutes}m)`);
   }
 
-  // ── 10. Send in natural parts with human-paced delays ─────────────────────
+  // ── 12. Send in natural parts with human-paced delays ─────────────────────
   // willEscalate is passed through so sendInParts can bypass its own
   // isEscalated guard for THIS specific send — otherwise, now that the mute
   // above runs first, that guard would see its own just-set mute and
@@ -389,6 +421,103 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // protecting against a genuinely concurrent, unrelated mute (e.g. staff
   // replying via the app mid-send).
   await sendInParts(senderId, aiReply, env, willEscalate);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseIntakeBlock — pull a completed repair booking out of A'aisyah's reply
+//
+// When she finishes taking a booking she appends a machine-readable block to
+// her confirmation message (see prompt.js "## RECORDING A COMPLETED BOOKING"):
+//
+//   [INTAKE]
+//   name: Amin
+//   device: iPhone 12
+//   fault: Skrin pecah
+//   branch: Sungai Petani
+//   contact: 0123456789
+//   time: Esok pagi
+//   [/INTAKE]
+//
+// Asking the model to emit structured fields and parsing them deterministically
+// beats regexing a free-text confirmation, and costs nothing extra — the
+// alternative, a second LLM call just to extract fields, would add latency to
+// an invocation already sharing Cloudflare's 30s waitUntil() budget with the
+// debounce and the human-paced sends.
+//
+// Returns { intake, cleanedReply }. intake is null when no block is present,
+// which is the case for the overwhelming majority of replies. cleanedReply
+// ALWAYS has the block stripped, whether or not parsing found usable fields —
+// a malformed block must never reach the customer, and stripping is therefore
+// deliberately more aggressive than parsing.
+//
+// The stripped reply is what gets saved to D1 and sent, so the block never
+// enters conversation history. That also stops the model seeing its own past
+// blocks and re-emitting one for a booking it already recorded.
+// ─────────────────────────────────────────────────────────────────────────────
+const INTAKE_BLOCK = /\[INTAKE\]([\s\S]*?)(?:\[\/INTAKE\]|$)/i;
+
+const INTAKE_FIELDS = {
+  name:    'customerName',
+  device:  'deviceModel',
+  fault:   'fault',
+  branch:  'branch',
+  contact: 'contact',
+  time:    'preferredTime',
+};
+
+export function parseIntakeBlock(reply) {
+  const text  = reply ?? '';
+  const match = text.match(INTAKE_BLOCK);
+
+  // Strip first and unconditionally — even an unterminated or garbled block
+  // must not survive into the customer-facing message.
+  const cleanedReply = text.replace(INTAKE_BLOCK, '').replace(/\n{3,}/g, '\n\n').trim();
+
+  if (!match) return { intake: null, cleanedReply };
+
+  const intake = {};
+  for (const line of match[1].split('\n')) {
+    const pair = line.match(/^\s*([a-z_]+)\s*:\s*(.+?)\s*$/i);
+    if (!pair) continue;
+
+    const field = INTAKE_FIELDS[pair[1].toLowerCase()];
+    // Models sometimes fill a field it has no answer for with a dash or
+    // "N/A" rather than omitting the line — treat those as absent.
+    const value = pair[2].trim();
+    if (field && value && !/^(-+|n\/?a|none|null|tbc)$/i.test(value)) {
+      intake[field] = value;
+    }
+  }
+
+  // A block with no usable field at all is noise, not a booking.
+  return { intake: Object.keys(intake).length > 0 ? intake : null, cleanedReply };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// formatIntakeAlert — the staff notification for a new booking
+//
+// Same shape as the escalation alert above so both read as one system in the
+// manager's chat. Fields the customer never gave are simply left out rather
+// than shown as empty, so the alert stays scannable on a phone.
+// ─────────────────────────────────────────────────────────────────────────────
+function formatIntakeAlert(senderId, intake) {
+  const rows = [
+    ['Customer',       intake.customerName],
+    ['Device',         intake.deviceModel],
+    ['Fault',          intake.fault],
+    ['Branch',         intake.branch],
+    ['Contact',        intake.contact],
+    ['Preferred time', intake.preferredTime],
+  ].filter(([, value]) => value);
+
+  return (
+    `📋 *New repair booking*\n\n` +
+    `*WhatsApp:* +${senderId}\n` +
+    rows.map(([label, value]) => `*${label}:* ${value}`).join('\n') +
+    `\n\n🤖 Taken by A'aisyah and saved. Reply via *WhatsApp Business App* if anything needs confirming.`
+  );
 }
 
 

@@ -25,10 +25,20 @@
     }
   ],
 
-  // ── Cron trigger — uncomment after bot is stable ───────────────────────────
-  // "triggers": {
-  //   "crons": ["0 13 * * *"]
-  // }
+  // ── Cron triggers ──────────────────────────────────────────────────────────
+  // Shared slot — scheduled() in index.js dispatches on controller.cron, so
+  // each schedule below maps to one job. Strings must match the constants in
+  // index.js character-for-character.
+  //
+  //   "0 18 * * *"  2:00am MYT — data retention purge (live)
+  //   "0 13 * * *"  9:00pm MYT — daily enquiry summary to staff. NOT YET
+  //                 BUILT, so deliberately left out: registering it now
+  //                 would wake the worker every night to do nothing. Add it
+  //                 to the array below at the same time as filling in its
+  //                 case in index.js, not before.
+  "triggers": {
+    "crons": ["0 18 * * *"]
+  },
 
 
 	/**

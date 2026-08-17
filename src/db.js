@@ -188,6 +188,30 @@ export async function getLatestUserMessageId(db, senderId) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// getPreviousActivityAt — timestamp of the newest message for this sender
+// that is OLDER than the one currently being handled, or null if there is
+// none. Used by bot.js to decide whether to send the AI-disclosure notice:
+//
+//   null            -> never messaged before, brand new customer
+//   older than 14d  -> returning after a long gap
+//   recent          -> mid-conversation, notice already seen
+//
+// beforeRowId is the current message's own conversations.id. Excluding it by
+// id rather than by timestamp matters: the current message was already saved
+// by index.js before bot.js runs, so a plain MAX(timestamp) would just return
+// "now" for everyone and the notice would never fire.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function getPreviousActivityAt(db, senderId, beforeRowId) {
+  const row = await db
+    .prepare(`SELECT MAX(timestamp) as ts FROM conversations WHERE sender_id = ? AND id < ?`)
+    .bind(senderId, beforeRowId)
+    .first();
+
+  return row?.ts ?? null;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // getRecentMessages — fetch last N messages for a sender
 //
 // Returns them in chronological order (oldest first) so they can be

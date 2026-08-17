@@ -6,23 +6,28 @@
  *   2. Checks if sender is escalated — stays silent if so
  *   3. Debounce — waits MESSAGE_DEBOUNCE_MS, then bails if a newer message
  *      from this sender has since arrived (see the comment at that step)
- *   4. Fetches recent conversation history from D1
- *   5. Pricing lookup — matches a brand tab (falling back unconditionally
+ *   4. AI disclosure notice — sends a fixed-string transparency notice if
+ *      this customer is brand new or returning after AI_NOTICE_DAYS (14) of
+ *      silence, mirroring the WhatsApp Business App greeting's own timing.
+ *      See the AI DISCLOSURE NOTICE block below for why it is sent from
+ *      here rather than by the app's built-in greeting feature
+ *   5. Fetches recent conversation history from D1
+ *   6. Pricing lookup — matches a brand tab (falling back unconditionally
  *      to a brand mentioned earlier in history if the current message has
  *      none of its own), or the fallback tab for a device-agnostic
  *      enquiry, and builds pricing context (see pricing.js matchBrandTab /
  *      matchBrandFromHistory / findFallbackTab / looksLikeDeviceAgnosticEnquiry)
- *   6. Calls the configured LLM (see llm.js) with history + new message +
+ *   7. Calls the configured LLM (see llm.js) with history + new message +
  *      pricing context
- *   7. Saves reply to D1
- *   8. Detects escalation trigger in reply — auto-mutes (self-resolving
+ *   8. Saves reply to D1
+ *   9. Detects escalation trigger in reply — auto-mutes (self-resolving
  *      after MUTE_WINDOW_MINUTES, not permanent) and alerts staff if found.
  *      Runs BEFORE the human-paced sends below, while the invocation still
  *      has most of Cloudflare's 30s waitUntil() budget left, rather than
  *      risking cancellation after ~16s of pacing delays
- *   9. Sends reply in natural parts with human-paced delays — told to
+ *  10. Sends reply in natural parts with human-paced delays — told to
  *      bypass its own escalation guard when this exact reply is the one
- *      that just triggered step 8, so the escalation notice always reaches
+ *      that just triggered step 9, so the escalation notice always reaches
  *      the customer instead of getting caught by its own just-set mute
  *
  * NOTE: Media handling (images, audio, reactions, video) is now handled
@@ -38,6 +43,7 @@ import {
   refreshAutoMute,
   resolveEscalation,
   getLatestUserMessageId,
+  getPreviousActivityAt,
   getSetting,
   setSetting,
   getActiveMutes,
@@ -59,6 +65,94 @@ import {
 } from './pricing.js';
 
 import { getSheetTabs, getPricingRows } from './googleSheets.js';
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI DISCLOSURE NOTICE
+//
+// Sent once to a customer who is either brand new or returning after a long
+// gap, before anything else in the conversation. Mirrors the timing of the
+// WhatsApp Business App's own built-in greeting (new contact, or no activity
+// for 14 days) but is sent server-side from here instead.
+//
+// WHY NOT THE BUILT-IN GREETING: that one is sent by the phone, which is why
+// it silently does nothing when the phone is offline. Worse, being a
+// device-sent message it arrives back as an smb_message_echoes webhook, and
+// index.js calls refreshAutoMute() on every echo — so an auto-greeting would
+// mute this bot for MUTE_WINDOW_MINUTES at the exact moment a new customer
+// starts talking.
+//
+// These are FIXED STRINGS on purpose, never LLM-generated. A disclosure that
+// can be re-worded by the model is a disclosure that can drift, hedge, or be
+// dropped entirely on a bad generation.
+//
+// Deliberately NOT saved to conversations: it is boilerplate the customer
+// never wrote and never replied to, and leaving it out keeps it from eating
+// history slots and from tempting the LLM to echo it back later. It also
+// keeps the "has this customer been here before" check below honest, since
+// that check reads the same table.
+// ─────────────────────────────────────────────────────────────────────────────
+const PRIVACY_POLICY_URL = 'https://ifixexpress.com.my/privacy-policy';
+
+const AI_NOTICE_EN =
+  `Hi! Welcome to iFix Express 👋\n\n` +
+  `Quick heads up, replies here may come from our AI assistant, A'aisyah. Our team reads every chat and can step in anytime.\n\n` +
+  `We keep your messages to handle your enquiry and follow up on your repair. Please don't send IC numbers, bank card details or passwords here.\n\n` +
+  `More on how we handle your info: ${PRIVACY_POLICY_URL}`;
+
+const AI_NOTICE_BM =
+  `Salam, selamat datang ke iFix Express 👋\n\n` +
+  `Just nak bagitahu, balasan di sini mungkin datang dari AI assistant kami, A'aisyah. Team kami baca semua chat dan boleh masuk bila-bila masa.\n\n` +
+  `Mesej Cik kami simpan untuk urus pertanyaan dan follow up repair. Jangan hantar no IC, detail kad bank atau password di sini ya.\n\n` +
+  `Maklumat lanjut tentang data Cik: ${PRIVACY_POLICY_URL}`;
+
+// Words that clearly signal one language and are unlikely to appear in the
+// other. Deliberately small and high-precision rather than exhaustive —
+// this only picks which of two fixed notices to send, and the AI reply that
+// follows does its own proper language matching regardless (see prompt.js
+// "## LANGUAGE"), so a wrong call here costs one slightly-off message, not
+// a wrong-language conversation.
+const BM_MARKERS = [
+  'salam', 'assalam', 'berapa', 'harga', 'boleh', 'nak', 'saya', 'ada', 'tak',
+  'macam', 'kena', 'buat', 'rosak', 'baiki', 'tukar', 'skrin', 'bateri',
+  'bila', 'mana', 'camne', 'utk', 'dgn', 'je', 'ni', 'tu',
+];
+
+const EN_MARKERS = [
+  'how much', 'price', 'the', 'is', 'my', 'you', 'can i', 'do you',
+  'screen', 'battery', 'repair', 'fix', 'cost', 'available', 'change',
+];
+
+// Defaults to BM — the shop is in Kedah and Penang and most customers open
+// in Malay or Manglish. English is chosen only on a clear English signal
+// with no competing Malay one, so an ambiguous opener like "Hi" stays BM.
+function pickNoticeLanguage(text) {
+  const t = (text ?? '').toLowerCase();
+  const bmHits = BM_MARKERS.filter(w => t.includes(w)).length;
+  const enHits = EN_MARKERS.filter(w => t.includes(w)).length;
+  return enHits > 0 && bmHits === 0 ? AI_NOTICE_EN : AI_NOTICE_BM;
+}
+
+// Sent as ONE message rather than through sendInParts. It is a notice, not
+// conversation, so it should read as a single distinct block, and splitting
+// it into four human-paced sends would burn ~10s of Cloudflare's 30s
+// waitUntil() budget before the actual reply has even been generated.
+async function maybeSendAiNotice({ senderId, incomingText, env, messageRowId }) {
+  if (messageRowId == null) return false;   // same guard as the debounce above
+
+  const windowDays = Number(env.AI_NOTICE_DAYS ?? 14);
+  const lastSeenAt = await getPreviousActivityAt(env.DB, senderId, messageRowId);
+
+  const isNew       = lastSeenAt == null;
+  const isReturning = lastSeenAt != null &&
+                      (Math.floor(Date.now() / 1000) - lastSeenAt) > windowDays * 86400;
+
+  if (!isNew && !isReturning) return false;
+
+  await sendTextMessage(senderId, pickNoticeLanguage(incomingText), env);
+  console.log(`[Bot] Sent AI disclosure notice to ${senderId} (${isNew ? 'new customer' : `returning after ${windowDays}+ days`})`);
+  return true;
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +211,19 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     }
   }
 
-  // ── 4. Fetch recent conversation history ──────────────────────────────────
+  // ── 4. AI disclosure notice — new customer, or back after a long gap ─────
+  // Placed after the debounce on purpose: a customer opening with three
+  // rapid messages produces three invocations, and only the last one gets
+  // past the debounce, so the notice goes out exactly once per burst rather
+  // than three times. Failure here is non-fatal — a customer who misses the
+  // notice should still get helped, so this never blocks the reply below.
+  try {
+    await maybeSendAiNotice({ senderId, incomingText, env, messageRowId });
+  } catch (err) {
+    console.error('[Bot] AI disclosure notice failed to send:', err.message);
+  }
+
+  // ── 5. Fetch recent conversation history ──────────────────────────────────
   // Default 32 messages (16 exchanges) — raised from 16 after a real
   // conversation confirmed the failure mode directly: a customer stated
   // their branch in their very first message, and much later in a long
@@ -135,7 +241,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // burst — not just the latest one.
   const history = await getRecentMessages(env.DB, senderId, Number(env.HISTORY_MESSAGE_LIMIT ?? 32));
 
-  // ── 5. Pricing lookup — brand detected anywhere in the message ───────────
+  // ── 6. Pricing lookup — brand detected anywhere in the message ───────────
   // Fuzzy-matches the message against the spreadsheet's ACTUAL current tab
   // titles (not a hardcoded brand list), so a new brand tab just works with
   // no code change. Triggers on any message mentioning a brand — not just
@@ -225,7 +331,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     console.error('[Bot] Pricing lookup failed:', err.message);
   }
 
-  // ── 6. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
+  // ── 7. Call the LLM (provider set via LLM_PROVIDER — see llm.js) ─────────
   let aiReply;
   try {
     aiReply = await generateReply(history, incomingText, env, pricingContext);
@@ -234,10 +340,10 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     aiReply = 'Maaf, ada gangguan teknikal sebentar. Team kami akan balas anda tidak lama lagi! 🙏';
   }
 
-  // ── 7. Save bot reply ─────────────────────────────────────────────────────
+  // ── 8. Save bot reply ─────────────────────────────────────────────────────
   await saveMessage(env.DB, { senderId, role: 'ai-assistant', text: aiReply });
 
-  // ── 8. Detect escalation trigger and mute/alert EARLY ────────────────────
+  // ── 9. Detect escalation trigger and mute/alert EARLY ────────────────────
   // Moved ahead of sendInParts (used to run after it) so the actual mute D1
   // write and staff alert happen while the invocation still has nearly the
   // full 30s waitUntil() budget available, rather than being squeezed in
@@ -272,7 +378,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     console.log(`[Bot] Escalated ${senderId} to staff (auto mute, ${windowMinutes}m)`);
   }
 
-  // ── 9. Send in natural parts with human-paced delays ─────────────────────
+  // ── 10. Send in natural parts with human-paced delays ─────────────────────
   // willEscalate is passed through so sendInParts can bypass its own
   // isEscalated guard for THIS specific send — otherwise, now that the mute
   // above runs first, that guard would see its own just-set mute and

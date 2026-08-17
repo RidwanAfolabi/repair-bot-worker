@@ -45,6 +45,7 @@ export async function initDb(db) {
         customer_name  TEXT,
         device_model   TEXT,
         fault          TEXT,
+        branch         TEXT,
         contact        TEXT,
         preferred_time TEXT,
         timestamp      INTEGER NOT NULL DEFAULT (unixepoch())
@@ -402,15 +403,74 @@ export async function resolveEscalation(db, senderId) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // saveIntake — store a completed repair booking
+//
+// Called from bot.js when A'aisyah closes out a booking and emits her
+// [INTAKE] block — see parseIntakeBlock there. Every field is nullable on
+// purpose: a customer who books without giving a separate contact number, or
+// who is vague about timing, should still produce a record rather than
+// losing the booking entirely over one missing line.
+//
+// Returns the new row id so the caller can log/reference it.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function saveIntake(db, { senderId, customerName, deviceModel, fault, contact, preferredTime }) {
-  await db
+export async function saveIntake(db, { senderId, customerName, deviceModel, fault, branch, contact, preferredTime }) {
+  const result = await db
     .prepare(`
-      INSERT INTO intakes (sender_id, customer_name, device_model, fault, contact, preferred_time)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO intakes (sender_id, customer_name, device_model, fault, branch, contact, preferred_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
-    .bind(senderId, customerName, deviceModel, fault, contact, preferredTime)
+    .bind(
+      senderId,
+      customerName  ?? null,
+      deviceModel   ?? null,
+      fault         ?? null,
+      branch        ?? null,
+      contact       ?? null,
+      preferredTime ?? null
+    )
     .run();
+
+  return result.meta.last_row_id;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// purgeOldConversations — delete conversation logs past the retention window
+//
+// Backs the privacy policy's stated commitment that "conversation logs are
+// retained for a maximum of 12 months and then deleted". Run daily by the
+// scheduled() handler in index.js — see the cron trigger in wrangler.jsonc.
+//
+// Also clears escalation rows left orphaned by the purge: an escalation is
+// per-customer mute state, so once a customer has no conversation history
+// left there is nothing for that state to describe. Rows for customers who
+// ARE still active are untouched regardless of age, since an active manual
+// mute must survive indefinitely (see isEscalated / setManualMute).
+//
+// intakes are deliberately NOT purged here. They are repair booking records,
+// not conversation logs, and the policy commitment covers the latter. If
+// they should age out too, that is a separate business decision about
+// business records rather than something to fold in silently.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function purgeOldConversations(db, retentionDays = 365) {
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400;
+
+  const conversations = await db
+    .prepare(`DELETE FROM conversations WHERE timestamp < ?`)
+    .bind(cutoff)
+    .run();
+
+  const escalations = await db
+    .prepare(`
+      DELETE FROM escalations
+      WHERE sender_id NOT IN (SELECT DISTINCT sender_id FROM conversations)
+    `)
+    .run();
+
+  return {
+    cutoff,
+    conversationsDeleted: conversations.meta.changes ?? 0,
+    escalationsDeleted:   escalations.meta.changes ?? 0,
+  };
 }
 
 

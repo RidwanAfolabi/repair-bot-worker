@@ -48,7 +48,7 @@ import {
   refreshAutoMute,
   resolveEscalation,
   getLatestUserMessageId,
-  getPreviousActivityAt,
+  getLastEngagementAt,
   getSetting,
   setSetting,
   getActiveMutes,
@@ -143,15 +143,13 @@ function pickNoticeLanguage(text) {
 // conversation, so it should read as a single distinct block, and splitting
 // it into four human-paced sends would burn ~10s of Cloudflare's 30s
 // waitUntil() budget before the actual reply has even been generated.
-async function maybeSendAiNotice({ senderId, incomingText, env, messageRowId }) {
-  if (messageRowId == null) return false;   // same guard as the debounce above
+async function maybeSendAiNotice({ senderId, incomingText, env }) {
+  const windowDays   = Number(env.AI_NOTICE_DAYS ?? 14);
+  const lastRepliedAt = await getLastEngagementAt(env.DB, senderId);
 
-  const windowDays = Number(env.AI_NOTICE_DAYS ?? 14);
-  const lastSeenAt = await getPreviousActivityAt(env.DB, senderId, messageRowId);
-
-  const isNew       = lastSeenAt == null;
-  const isReturning = lastSeenAt != null &&
-                      (Math.floor(Date.now() / 1000) - lastSeenAt) > windowDays * 86400;
+  const isNew       = lastRepliedAt == null;
+  const isReturning = lastRepliedAt != null &&
+                      (Math.floor(Date.now() / 1000) - lastRepliedAt) > windowDays * 86400;
 
   if (!isNew && !isReturning) return false;
 
@@ -224,7 +222,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // than three times. Failure here is non-fatal — a customer who misses the
   // notice should still get helped, so this never blocks the reply below.
   try {
-    await maybeSendAiNotice({ senderId, incomingText, env, messageRowId });
+    await maybeSendAiNotice({ senderId, incomingText, env });
   } catch (err) {
     console.error('[Bot] AI disclosure notice failed to send:', err.message);
   }

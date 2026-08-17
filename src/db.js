@@ -189,23 +189,35 @@ export async function getLatestUserMessageId(db, senderId) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getPreviousActivityAt — timestamp of the newest message for this sender
-// that is OLDER than the one currently being handled, or null if there is
-// none. Used by bot.js to decide whether to send the AI-disclosure notice:
+// getLastEngagementAt — when iFix Express last REPLIED to this sender, from
+// either side of the house: A'aisyah ('ai-assistant') or a human via the
+// WhatsApp Business App ('staff'). null means nobody has ever replied.
 //
-//   null            -> never messaged before, brand new customer
+// Used by bot.js to decide whether to send the AI-disclosure notice:
+//
+//   null            -> never been replied to, treat as a brand new customer
 //   older than 14d  -> returning after a long gap
 //   recent          -> mid-conversation, notice already seen
 //
-// beforeRowId is the current message's own conversations.id. Excluding it by
-// id rather than by timestamp matters: the current message was already saved
-// by index.js before bot.js runs, so a plain MAX(timestamp) would just return
-// "now" for everyone and the notice would never fire.
+// DELIBERATELY IGNORES THE CUSTOMER'S OWN MESSAGES. An earlier version asked
+// "is there any prior message from this sender", which broke on bursts: a new
+// customer sending two messages in quick succession has the first one saved
+// before the second one's invocation runs, so their own opening message made
+// them look like a mid-conversation regular and swallowed their notice. Only
+// counting OUR replies makes the answer independent of how many messages the
+// customer fires off, because nothing the customer does can suppress it.
+//
+// Counting 'staff' as engagement is intentional: if a human already picked
+// this customer up in the Business App, they are mid-conversation with iFix
+// Express whether or not the bot ever said anything.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function getPreviousActivityAt(db, senderId, beforeRowId) {
+export async function getLastEngagementAt(db, senderId) {
   const row = await db
-    .prepare(`SELECT MAX(timestamp) as ts FROM conversations WHERE sender_id = ? AND id < ?`)
-    .bind(senderId, beforeRowId)
+    .prepare(`
+      SELECT MAX(timestamp) as ts FROM conversations
+      WHERE sender_id = ? AND role IN ('ai-assistant', 'staff')
+    `)
+    .bind(senderId)
     .first();
 
   return row?.ts ?? null;

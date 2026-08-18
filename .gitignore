@@ -168,4 +168,12 @@ dist
 
 # Database files
 
-backup.sql
+# D1 exports are a full dump of conversation history: customer names, phone
+# numbers, everything they ever typed. `wrangler d1 export` writes them to the
+# project root, so ignore root-level .sql outright rather than listing each
+# backup filename by hand — that approach only ever covers the backups you
+# already made, never the next one.
+#
+# Deliberate SQL tooling lives in scripts/ and stays tracked.
+/*.sql
+!/scripts/*.sql

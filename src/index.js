@@ -46,6 +46,7 @@
 import { handleIncomingMessage, handleStaffCommand } from './bot.js';
 import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting, purgeOldConversations } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
+import { digitsOnly, phoneList, samePhone } from './phone.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cron schedules — must match the strings in wrangler.jsonc EXACTLY.
@@ -512,7 +513,7 @@ async function handlePostMessage(body, env) {
   // going to be appropriate. Deliberately absolute, not staff-bypassed —
   // unlike TEST_ALLOWLIST below, this isn't a testing-scope restriction,
   // it's "this number should be invisible to the bot, full stop."
-  const delisted = (env.DELISTED_NUMBERS ?? '').split(',').map(n => n.trim()).filter(Boolean);
+  const delisted = phoneList(env.DELISTED_NUMBERS);
 
   // ── Full raw payload dump — TEMPORARY, remove once portfolio ID field is found ──
   if (field === 'account_update') {
@@ -596,7 +597,7 @@ async function handlePostMessage(body, env) {
       // own manual reply to one. Checked before self-chat too, though a
       // delisted customer number would never realistically coincide with
       // the business's own connected number anyway.
-      if (delisted.includes(to)) {
+      if (delisted.includes(digitsOnly(to))) {
         console.log(`[Webhook] smb_message_echoes — ${to} is delisted, ignoring this echo entirely`);
         continue;
       }
@@ -612,7 +613,7 @@ async function handlePostMessage(body, env) {
         // client-side WhatsApp Business App feature, unrelated to Cloud API
         // send permissions), so the failure is one-directional and easy to
         // miss without this warning.
-        if (env.STAFF_WA_NUMBER === from) {
+        if (samePhone(env.STAFF_WA_NUMBER, from)) {
           console.warn(
             `[Webhook] STAFF_WA_NUMBER (${env.STAFF_WA_NUMBER}) is the same number as this WhatsApp ` +
             `connection (Coexistence). Commands sent from here will still be received, but every reply — ` +
@@ -746,7 +747,7 @@ async function handlePostMessage(body, env) {
 
   console.log(`[PostMessage] '${msgType}' from ${senderId}`);
 
-  if (delisted.includes(senderId)) {
+  if (delisted.includes(digitsOnly(senderId))) {
     console.log(`[PostMessage] ${senderId} is delisted — ignoring entirely, no read receipt, no D1 record`);
     return;
   }
@@ -768,7 +769,7 @@ async function handlePostMessage(body, env) {
   // by this point regardless, so neither layer has any effect on
   // onboarding/sync plumbing. Worker still acknowledges the webhook with
   // 200 either way, so Meta never flags the endpoint as down.
-  if (senderId !== env.STAFF_WA_NUMBER) {
+  if (!samePhone(senderId, env.STAFF_WA_NUMBER)) {
     if (env.BOT_ENABLED === 'false') {
       console.log('[PostMessage] Bot paused (BOT_ENABLED=false in wrangler.jsonc) — skipping customer reply');
       return;
@@ -787,10 +788,10 @@ async function handlePostMessage(body, env) {
   // still handle everyone else manually via WhatsApp Business App. Set to "*"
   // to disable the restriction and reply to all customers. Staff messages
   // (STAFF_WA_NUMBER) always bypass this check.
-  if (senderId !== env.STAFF_WA_NUMBER) {
-    if (env.TEST_ALLOWLIST !== '*') {
-      const allowed = (env.TEST_ALLOWLIST ?? '').split(',').map(n => n.trim()).filter(Boolean);
-      if (!allowed.includes(senderId)) {
+  if (!samePhone(senderId, env.STAFF_WA_NUMBER)) {
+    if (String(env.TEST_ALLOWLIST ?? '').trim() !== '*') {
+      const allowed = phoneList(env.TEST_ALLOWLIST);
+      if (!allowed.includes(digitsOnly(senderId))) {
         console.log(`[PostMessage] ${senderId} not in TEST_ALLOWLIST — skipping, manager handles via app`);
         return;
       }

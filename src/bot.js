@@ -72,6 +72,8 @@ import {
 
 import { getSheetTabs, getPricingRows } from './googleSheets.js';
 
+import { samePhone } from './phone.js';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI DISCLOSURE NOTICE
@@ -168,7 +170,7 @@ async function maybeSendAiNotice({ senderId, incomingText, env }) {
 export async function handleIncomingMessage({ senderId, incomingText, env, messageRowId }) {
 
   // ── 1. Staff commands — from manager's personal number ───────────────────
-  if (senderId === env.STAFF_WA_NUMBER) {
+  if (samePhone(senderId, env.STAFF_WA_NUMBER)) {
     await handleStaffCommand(incomingText, env, senderId);
     return;
   }
@@ -364,12 +366,26 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // never cost the customer their reply — they were just told their booking
   // is confirmed, and going silent on them would be the worst outcome.
   if (intake) {
+    // Save and alert are deliberately INDEPENDENT, not chained. They were
+    // chained once, and a single schema mismatch inside saveIntake silently
+    // took the staff alert down with it: the customer was told their booking
+    // was confirmed and nobody at the shop ever heard about it. Of the two,
+    // the alert is the half with a human on the end, so it goes out even
+    // when persistence fails — and says so, see formatIntakeAlert.
+    let saveFailed = false;
+
     try {
       const intakeId = await saveIntake(env.DB, { senderId, ...intake });
-      await sendStaffAlert(formatIntakeAlert(senderId, intake), env);
       console.log(`[Bot] Recorded intake #${intakeId} for ${senderId} — fields: ${Object.keys(intake).join(', ')}`);
     } catch (err) {
-      console.error(`[Bot] Intake capture failed for ${senderId}:`, err.message);
+      saveFailed = true;
+      console.error(`[Bot] Intake save failed for ${senderId} (alerting staff anyway):`, err.message);
+    }
+
+    try {
+      await sendStaffAlert(formatIntakeAlert(senderId, intake, saveFailed), env);
+    } catch (err) {
+      console.error(`[Bot] Intake staff alert failed for ${senderId}:`, err.message);
     }
   }
 
@@ -401,7 +417,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
       `*Number:* +${senderId}\n` +
       `*Last message:* "${incomingText}"\n\n` +
       `👉 Open *WhatsApp Business App* and reply to this customer directly.\n\n` +
-      `🤖 Bot is paused for this customer for ${windowMinutes} minutes, then resumes on its own if untouched.\n` +
+      `🤖 AI auto-reply is paused for this customer for ${windowMinutes} minutes, then resumes on its own if untouched.\n` +
       `Replying via the app resets that timer. To keep it off indefinitely instead, send *!pause ${senderId}* — or *!resume ${senderId}* to bring it back sooner.`,
       env
     );
@@ -500,7 +516,7 @@ export function parseIntakeBlock(reply) {
 // manager's chat. Fields the customer never gave are simply left out rather
 // than shown as empty, so the alert stays scannable on a phone.
 // ─────────────────────────────────────────────────────────────────────────────
-function formatIntakeAlert(senderId, intake) {
+function formatIntakeAlert(senderId, intake, saveFailed = false) {
   const rows = [
     ['Customer',       intake.customerName],
     ['Device',         intake.deviceModel],
@@ -510,11 +526,18 @@ function formatIntakeAlert(senderId, intake) {
     ['Preferred time', intake.preferredTime],
   ].filter(([, value]) => value);
 
+  // When the row could not be persisted the alert becomes the ONLY record of
+  // this booking, so it has to say so plainly rather than claiming it was
+  // saved. The customer has already been told they are booked either way.
+  const footer = saveFailed
+    ? `\n\n⚠️ *Could not save this to the database.* This message is the only record, please write these details down.`
+    : `\n\n🤖 Taken by A'aisyah and saved. Reply via *WhatsApp Business App* if anything needs confirming.`;
+
   return (
     `📋 *New repair booking*\n\n` +
     `*WhatsApp:* +${senderId}\n` +
     rows.map(([label, value]) => `*${label}:* ${value}`).join('\n') +
-    `\n\n🤖 Taken by A'aisyah and saved. Reply via *WhatsApp Business App* if anything needs confirming.`
+    footer
   );
 }
 
@@ -564,7 +587,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
     await setManualMute(env.DB, target);
     await sendTextMessage(
       replyTo,
-      `✅ Bot paused for +${target} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
+      `✅ AI auto-reply paused for +${target} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
       env
     );
     return true;
@@ -576,7 +599,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
       return true;
     }
     await resolveEscalation(env.DB, target);
-    await sendTextMessage(replyTo, `✅ Bot resumed for +${target}.`, env);
+    await sendTextMessage(replyTo, `✅ AI auto-reply resumed for +${target}.`, env);
     // No message sent to the customer here — resuming silently. A'aisyah
     // will only speak again once the customer sends their next message.
     return true;
@@ -584,13 +607,13 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 
   if (cmd === '!pauseall') {
     await setSetting(env.DB, 'bot_enabled', 'false');
-    await sendTextMessage(replyTo, `🔴 Bot paused for ALL customers.\nSend !resumeall to turn back on.`, env);
+    await sendTextMessage(replyTo, `🔴 AI auto-reply paused for ALL customers.\nSend !resumeall to turn back on.`, env);
     return true;
   }
 
   if (cmd === '!resumeall') {
     await setSetting(env.DB, 'bot_enabled', 'true');
-    await sendTextMessage(replyTo, `🟢 Bot resumed for all customers.`, env);
+    await sendTextMessage(replyTo, `🟢 AI auto-reply resumed for all customers.`, env);
     return true;
   }
 
@@ -603,7 +626,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 
     await sendTextMessage(
       replyTo,
-      `📊 *Bot Status*\n\n` +
+      `📊 *AI Auto-Reply Status*\n\n` +
       `Global: ${globallyOn ? '🟢 ON' : '🔴 OFF'}\n` +
       `LLM: ${env.LLM_PROVIDER ?? 'gemini'}\n` +
       `Paused customers: ${mutes.length} (${manualCount} manual, ${autoCount} auto-timing-out)`,

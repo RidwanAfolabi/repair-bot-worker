@@ -72,6 +72,8 @@ import {
 
 import { getSheetTabs, getPricingRows } from './googleSheets.js';
 
+import { samePhone } from './phone.js';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI DISCLOSURE NOTICE
@@ -168,7 +170,7 @@ async function maybeSendAiNotice({ senderId, incomingText, env }) {
 export async function handleIncomingMessage({ senderId, incomingText, env, messageRowId }) {
 
   // ── 1. Staff commands — from manager's personal number ───────────────────
-  if (senderId === env.STAFF_WA_NUMBER) {
+  if (samePhone(senderId, env.STAFF_WA_NUMBER)) {
     await handleStaffCommand(incomingText, env, senderId);
     return;
   }
@@ -415,7 +417,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
       `*Number:* +${senderId}\n` +
       `*Last message:* "${incomingText}"\n\n` +
       `👉 Open *WhatsApp Business App* and reply to this customer directly.\n\n` +
-      `🤖 Bot is paused for this customer for ${windowMinutes} minutes, then resumes on its own if untouched.\n` +
+      `🤖 AI auto-reply is paused for this customer for ${windowMinutes} minutes, then resumes on its own if untouched.\n` +
       `Replying via the app resets that timer. To keep it off indefinitely instead, send *!pause ${senderId}* — or *!resume ${senderId}* to bring it back sooner.`,
       env
     );
@@ -585,7 +587,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
     await setManualMute(env.DB, target);
     await sendTextMessage(
       replyTo,
-      `✅ Bot paused for +${target} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
+      `✅ AI auto-reply paused for +${target} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
       env
     );
     return true;
@@ -597,7 +599,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
       return true;
     }
     await resolveEscalation(env.DB, target);
-    await sendTextMessage(replyTo, `✅ Bot resumed for +${target}.`, env);
+    await sendTextMessage(replyTo, `✅ AI auto-reply resumed for +${target}.`, env);
     // No message sent to the customer here — resuming silently. A'aisyah
     // will only speak again once the customer sends their next message.
     return true;
@@ -605,13 +607,13 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 
   if (cmd === '!pauseall') {
     await setSetting(env.DB, 'bot_enabled', 'false');
-    await sendTextMessage(replyTo, `🔴 Bot paused for ALL customers.\nSend !resumeall to turn back on.`, env);
+    await sendTextMessage(replyTo, `🔴 AI auto-reply paused for ALL customers.\nSend !resumeall to turn back on.`, env);
     return true;
   }
 
   if (cmd === '!resumeall') {
     await setSetting(env.DB, 'bot_enabled', 'true');
-    await sendTextMessage(replyTo, `🟢 Bot resumed for all customers.`, env);
+    await sendTextMessage(replyTo, `🟢 AI auto-reply resumed for all customers.`, env);
     return true;
   }
 
@@ -624,7 +626,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 
     await sendTextMessage(
       replyTo,
-      `📊 *Bot Status*\n\n` +
+      `📊 *AI Auto-Reply Status*\n\n` +
       `Global: ${globallyOn ? '🟢 ON' : '🔴 OFF'}\n` +
       `LLM: ${env.LLM_PROVIDER ?? 'gemini'}\n` +
       `Paused customers: ${mutes.length} (${manualCount} manual, ${autoCount} auto-timing-out)`,

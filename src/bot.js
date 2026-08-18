@@ -364,12 +364,26 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   // never cost the customer their reply — they were just told their booking
   // is confirmed, and going silent on them would be the worst outcome.
   if (intake) {
+    // Save and alert are deliberately INDEPENDENT, not chained. They were
+    // chained once, and a single schema mismatch inside saveIntake silently
+    // took the staff alert down with it: the customer was told their booking
+    // was confirmed and nobody at the shop ever heard about it. Of the two,
+    // the alert is the half with a human on the end, so it goes out even
+    // when persistence fails — and says so, see formatIntakeAlert.
+    let saveFailed = false;
+
     try {
       const intakeId = await saveIntake(env.DB, { senderId, ...intake });
-      await sendStaffAlert(formatIntakeAlert(senderId, intake), env);
       console.log(`[Bot] Recorded intake #${intakeId} for ${senderId} — fields: ${Object.keys(intake).join(', ')}`);
     } catch (err) {
-      console.error(`[Bot] Intake capture failed for ${senderId}:`, err.message);
+      saveFailed = true;
+      console.error(`[Bot] Intake save failed for ${senderId} (alerting staff anyway):`, err.message);
+    }
+
+    try {
+      await sendStaffAlert(formatIntakeAlert(senderId, intake, saveFailed), env);
+    } catch (err) {
+      console.error(`[Bot] Intake staff alert failed for ${senderId}:`, err.message);
     }
   }
 
@@ -500,7 +514,7 @@ export function parseIntakeBlock(reply) {
 // manager's chat. Fields the customer never gave are simply left out rather
 // than shown as empty, so the alert stays scannable on a phone.
 // ─────────────────────────────────────────────────────────────────────────────
-function formatIntakeAlert(senderId, intake) {
+function formatIntakeAlert(senderId, intake, saveFailed = false) {
   const rows = [
     ['Customer',       intake.customerName],
     ['Device',         intake.deviceModel],
@@ -510,11 +524,18 @@ function formatIntakeAlert(senderId, intake) {
     ['Preferred time', intake.preferredTime],
   ].filter(([, value]) => value);
 
+  // When the row could not be persisted the alert becomes the ONLY record of
+  // this booking, so it has to say so plainly rather than claiming it was
+  // saved. The customer has already been told they are booked either way.
+  const footer = saveFailed
+    ? `\n\n⚠️ *Could not save this to the database.* This message is the only record, please write these details down.`
+    : `\n\n🤖 Taken by A'aisyah and saved. Reply via *WhatsApp Business App* if anything needs confirming.`;
+
   return (
     `📋 *New repair booking*\n\n` +
     `*WhatsApp:* +${senderId}\n` +
     rows.map(([label, value]) => `*${label}:* ${value}`).join('\n') +
-    `\n\n🤖 Taken by A'aisyah and saved. Reply via *WhatsApp Business App* if anything needs confirming.`
+    footer
   );
 }
 

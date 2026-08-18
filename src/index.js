@@ -39,8 +39,6 @@
  *   META_APP_ID            — Your Meta App ID (App Dashboard → Settings → Basic)
  *   META_APP_SECRET        — Your Meta App Secret (same page, click Show)
  *   EMBEDDED_SIGNUP_URL    — The Meta-hosted Embedded Signup link (from Meta portal)
- *   META_APP_ID        — Your Meta App ID (from App Dashboard → Settings → Basic)
- *   META_APP_SECRET    — Your Meta App Secret (from App Dashboard → Settings → Basic)
  */
 
 import { handleIncomingMessage, handleStaffCommand } from './bot.js';
@@ -153,9 +151,11 @@ export default {
   //                            NOT built yet, and deliberately NOT registered
   //                            in wrangler.jsonc — an unhandled schedule would
   //                            just wake the worker daily to do nothing.
-  //                            Groundwork already exists in db.js:
-  //                            getTodaysConversations, getTodayConversationList
-  //                            and getActiveEscalations, all currently uncalled.
+  //                            Groundwork in db.js: getTodaysConversations is
+  //                            live but uncalled and usable as-is;
+  //                            getTodayConversationList, getActiveEscalations
+  //                            and getDashboardStats sit inside the SUSPENDED
+  //                            Phase B block and must be uncommented first.
   //                            To ship it: add the string to wrangler.jsonc's
   //                            crons array and fill in the case below.
   //

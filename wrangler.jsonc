@@ -66,7 +66,7 @@
     // on every `wrangler deploy`, silently overwriting any dashboard edit.
 
     	"BOT_ENABLED": "true",
-		"TEST_ALLOWLIST": "601123139568,2347015759242,601153696696,601115420094,601155241769", // use * to allow for all numbers.
+		"TEST_ALLOWLIST": "601123139568,2347015759242", // use * to allow for all numbers.
 		//"DELISTED_NUMBERS": "", already deployed as secret, so not needed here
 		"MUTE_WINDOW_MINUTES": "2", // default is 75 for now, just testing with short duration minutes
 		"LLM_PROVIDER": "claude",

@@ -411,7 +411,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
   const willEscalate = shouldEscalate(aiReply);
   if (willEscalate) {
     await refreshAutoMute(env.DB, senderId);
-    const windowMinutes = Number(env.MUTE_WINDOW_MINUTES ?? 2); // default is 75 for now, just testing with short duration minutes
+    const windowMinutes = Number(env.MUTE_WINDOW_MINUTES ?? 75); // default is 75 for now, just testing with short duration minutes
     await sendStaffAlert(
       `🚨 *Customer needs attention*\n\n` +
       `*Number:* +${senderId}\n` +

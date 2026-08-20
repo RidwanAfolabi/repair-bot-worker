@@ -68,7 +68,7 @@
     	"BOT_ENABLED": "true",
 		"TEST_ALLOWLIST": "601123139568,2347015759242", // use * to allow for all numbers.
 		//"DELISTED_NUMBERS": "", already deployed as secret, so not needed here
-		"MUTE_WINDOW_MINUTES": "2", // default is 75 for now, just testing with short duration minutes
+		"MUTE_WINDOW_MINUTES": "75", // default is 75 for now, just testing with short duration minutes
 		"LLM_PROVIDER": "claude",
 		"GEMINI_MODEL": "gemini-3.1-flash-lite",
 		"CLAUDE_MODEL": "claude-sonnet-5",

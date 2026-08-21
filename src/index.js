@@ -15,8 +15,10 @@
  *   edit (no text recoverable) / unsupported+edit → silently ignored, no reply
  *   text            → handled by bot as normal
  *   image/video/doc with caption → caption handled as text, staff alerted
- *   image/video/doc without caption → customer notified, staff alerted
- *   audio           → customer notified, staff alerted
+ *   image/video/doc without caption → NO customer reply; staff alerted and the
+ *                     event logged to D1 as context, so the bot picks the
+ *                     conversation back up from the customer's next message
+ *   audio           → same as above: no customer reply, staff alerted, logged
  *   sticker         → silently ignored (like a reaction)
  *   unknown         → silently ignored with a log
  *
@@ -860,15 +862,20 @@ async function handlePostMessage(body, env) {
     console.log(`[PostMessage] '${msgType}' with caption from ${senderId} — handling caption as text`);
 
     await sendReadReceipt(messageId, env);
-    const messageRowId = await saveMessage(env.DB, { senderId, role: 'customer', text: `[Sent ${msgType}] ${caption}` });
+    const messageRowId = await saveMessage(env.DB, {
+      senderId,
+      role: 'customer',
+      text: `[Customer sent ${msgType === 'image' ? 'an image' : `a ${msgType}`} you cannot see, with this caption] ${caption}`,
+    });
 
     await sendStaffAlert(
       `📎 *Media received from customer*\n\n` +
       `*Number:* +${senderId}\n` +
       `*Type:* ${msgType}\n` +
       `*Caption:* "${caption}"\n\n` +
-      `Please check WhatsApp Business App to view the ${msgType}.\n` +
-      `The bot is handling the text reply — intervene with *!pause ${senderId}* if needed.`,
+      `Open *WhatsApp Business App* to view it.\n\n` +
+      `🤖 A'aisyah is replying to the caption. She cannot see the file itself.\n` +
+      `Send *!pause ${senderId}* to take over.`,
       env
     );
 
@@ -877,58 +884,62 @@ async function handlePostMessage(body, env) {
   }
 
   // ── Image/video/document WITHOUT caption ──────────────────────────────────
+  // NO reply to the customer. A'aisyah routinely ASKS for a photo before
+  // diagnosing anything visual (see prompt.js "Request a photo or video of
+  // the actual problem"), so auto-answering every arriving image with
+  // "thanks, the team will get back to you" ended the conversation at exactly
+  // the moment the customer did what she asked. Staying quiet lets the thread
+  // continue: the customer's next message goes through the normal text path
+  // with this media record already in history.
+  //
+  // Staff are still alerted, since they are the only ones who can actually
+  // see the file. The read receipt still goes out, so the customer sees their
+  // message was received rather than ignored.
   if (msgType === 'image' || msgType === 'video' || msgType === 'document') {
     await sendReadReceipt(messageId, env);
-
-    const mediaLabel = msgType === 'image' ? 'gambar' : msgType === 'video' ? 'video' : 'fail';
-
-    await sendTextMessage(
-      senderId,
-      `Terima kasih sebab hantar ${mediaLabel} tu! Team kami akan tengok dan get back to you shortly ya 😊`,
-      env
-    );
 
     await sendStaffAlert(
       `📎 *${msgType.charAt(0).toUpperCase() + msgType.slice(1)} received from customer*\n\n` +
       `*Number:* +${senderId}\n\n` +
-      `Please open WhatsApp Business App to view the ${msgType} and reply directly.\n\n` +
-      `Bot has informed the customer that team will get back to them.\n` +
-      `Type *!pause ${senderId}* to take over the conversation.`,
+      `Open *WhatsApp Business App* to view it.\n\n` +
+      `🤖 A'aisyah did NOT reply to this and cannot see the file, but she is still handling the conversation and will answer their next message normally.\n` +
+      `Send *!pause ${senderId}* to take over.`,
       env
     );
 
+    // Phrasing matters: this line becomes LLM context. It states the fact and
+    // the limitation without implying staff have taken the conversation over,
+    // which is what the previous wording ("staff alerted to view and respond")
+    // did — it read as a handoff and pushed her toward escalating.
     await saveMessage(env.DB, {
       senderId,
       role: 'customer',
-      text: `[Customer sent a ${msgType} — staff alerted to view and respond]`,
+      text: `[Customer sent ${msgType === 'image' ? 'an image' : `a ${msgType}`} — you cannot see it, staff have been notified and can view it]`,
     });
 
     return;
   }
 
   // ── Audio / voice notes ───────────────────────────────────────────────────
+  // Same treatment as media above: silent to the customer, staff alerted,
+  // logged as context so the conversation can carry on from their next
+  // typed message.
   if (msgType === 'audio') {
     await sendReadReceipt(messageId, env);
-
-    await sendTextMessage(
-      senderId,
-      'Terima kasih! Voice note diterima. Buat masa ni saya belum boleh dengar audio, tapi team kami akan get back to you ya 😊\n\nKalau senang, boleh taip soalan you — lagi cepat A\'aisyah boleh bantu!',
-      env
-    );
 
     await sendStaffAlert(
       `🎤 *Voice note received from customer*\n\n` +
       `*Number:* +${senderId}\n\n` +
-      `Please open WhatsApp Business App to listen and reply.\n` +
-      `Bot has asked customer to type if possible.\n` +
-      `Type *!pause ${senderId}* to take over if needed.`,
+      `Open *WhatsApp Business App* to listen.\n\n` +
+      `🤖 A'aisyah did NOT reply to this and cannot hear it, but she is still handling the conversation and will answer their next message normally.\n` +
+      `Send *!pause ${senderId}* to take over.`,
       env
     );
 
     await saveMessage(env.DB, {
       senderId,
       role: 'customer',
-      text: '[Customer sent a voice note — staff alerted, customer asked to type]',
+      text: '[Customer sent a voice note — you cannot hear it, staff have been notified and can listen]',
     });
 
     return;

@@ -329,11 +329,11 @@ If a customer's screen is lifting or peeling from the frame (lekang) but not cra
 - 1 month warranty
 - If screen is already blank or fully broken, gam service is not enough — full screen replacement needed
 
-### Charging port repair
+### Charging port repair (this is only applicable to android phones, not iPhones)
 Fixed pricing by connector type — not model-dependent, no need to check live pricing data for this one:
 - USB Micro — RM45
 - USB Type-C — RM80
-- USB Type-C, Samsung S series specifically — usually RM120 (higher than the standard Type-C price)
+- USB Type-C, Samsung S and Note series specifically — usually RM120 (higher than the standard Type-C price)
 
 ### Diagnostic checks are free (FOC)
 Checking a device to diagnose the problem costs nothing — no charge just to look at a phone and explain what's wrong, even if the customer decides not to proceed with the repair afterward. State this plainly and confidently whenever a customer asks how much just to check something.

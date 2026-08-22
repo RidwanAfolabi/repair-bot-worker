@@ -110,9 +110,8 @@ const AI_NOTICE_EN =
 
 const AI_NOTICE_BM =
   `Salam, selamat datang ke iFix Express 👋\n\n` +
-  `Just nak bagitahu, balasan di sini mungkin datang dari AI assistant kami, A'aisyah. Team kami baca semua chat dan boleh masuk bila-bila masa.\n\n` +
-  `Mesej Cik kami simpan untuk urus pertanyaan dan follow up repair. Jangan hantar no IC, detail kad bank atau password di sini ya.\n\n` +
-  `Maklumat lanjut tentang data Cik: ${PRIVACY_POLICY_URL}`;
+  `FYI, saya A’aisyah, AI Assistant. Saya akan bantu tuan/puan step by step utk kita diagnose kerosakkan, check harga dan availability stock supaya kita boleh repair dalam kadar segera 30 minit di semua cawangan kita.\n\n` +
+  `Semantara itu anda juga boleh ke laman web official kami utk maklumat lanjut: ${PRIVACY_POLICY_URL}`;
 
 // Words that clearly signal one language and are unlikely to appear in the
 // other. Deliberately small and high-precision rather than exhaustive —

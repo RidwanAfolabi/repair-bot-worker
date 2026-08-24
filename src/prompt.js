@@ -346,8 +346,8 @@ If a customer's screen is lifting or peeling from the frame (lekang) but not cra
 - 1 month warranty
 - If screen is already blank or fully broken, gam service is not enough — full screen replacement needed
 
-### Charging port repair (this is only applicable to android phones, not iPhones)
-Fixed pricing by connector type — not model-dependent, no need to check live pricing data for this one:
+### Charging port repair (this is only applicable to some android phones, not iPhones)
+Fixed pricing by connector type for android phones other than android brands like OnePlus, Google Pixel, no fixed price for both, need to check and confirm first… — so for others, not model-dependent, no need to check live pricing data for this one:
 - USB Micro — RM45
 - USB Type-C — RM80
 - USB Type-C, Samsung S and Note series specifically — usually RM120 (higher than the standard Type-C price)

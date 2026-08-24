@@ -151,6 +151,19 @@ export async function initDb(db) {
 // still the newest one by the time its reply is about to be generated.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function saveMessage(db, { senderId, role, text, timestamp }) {
+  // D1 rejects an undefined bind parameter with a bare
+  // "D1_TYPE_ERROR: Type 'undefined' not supported for value 'undefined'",
+  // which names neither the column nor the caller — a real edit webhook with
+  // no sender id cost a round of bundle-line archaeology to trace. Failing
+  // here instead says which field was missing and for whom.
+  if (!senderId || !role || !text) {
+    throw new Error(
+      `saveMessage: refusing to insert an incomplete row — ` +
+      `senderId=${senderId ?? 'MISSING'}, role=${role ?? 'MISSING'}, ` +
+      `text=${text ? `${text.length} chars` : 'MISSING'}`
+    );
+  }
+
   // timestamp is optional — pass it when backfilling history sync so messages
   // keep their real device time instead of all landing at insert time.
   let result;

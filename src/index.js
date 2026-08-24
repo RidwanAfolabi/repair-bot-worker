@@ -46,7 +46,7 @@
 import { handleIncomingMessage, handleStaffCommand } from './bot.js';
 import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting, purgeOldConversations } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
-import { digitsOnly, phoneList, samePhone } from './phone.js';
+import { digitsOnly, phoneList, samePhone, normalizeId, displayId } from './phone.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cron schedules — must match the strings in wrangler.jsonc EXACTLY.
@@ -590,8 +590,12 @@ async function handlePostMessage(body, env) {
     const echoes = value?.message_echoes ?? [];
 
     for (const echo of echoes) {
-      const from     = echo?.from;
-      const to       = echo?.to;
+      // to/from can be BSUIDs rather than phone numbers when the customer on
+      // the other side has adopted a WhatsApp username — same omission rule as
+      // inbound messages, so fall back to the *_user_id variants before
+      // giving up on the echo. See the sender-resolution block further down.
+      const from     = echo?.from ?? echo?.from_user_id;
+      const to       = echo?.to   ?? echo?.to_user_id ?? echo?.recipient_user_id;
       const echoType = echo?.type;
       if (!from || !to) continue;
 
@@ -599,7 +603,7 @@ async function handlePostMessage(body, env) {
       // own manual reply to one. Checked before self-chat too, though a
       // delisted customer number would never realistically coincide with
       // the business's own connected number anyway.
-      if (delisted.includes(digitsOnly(to))) {
+      if (delisted.includes(normalizeId(to))) {
         console.log(`[Webhook] smb_message_echoes — ${to} is delisted, ignoring this echo entirely`);
         continue;
       }
@@ -657,7 +661,10 @@ async function handlePostMessage(body, env) {
 
     for (const entry of syncEntries) {
       if (entry?.type !== 'contact') continue;
-      const phoneNumber = entry?.contact?.phone_number;
+      // A contact the shop saved for a username-only customer has no phone
+      // number to key on; fall back to their BSUID so they are still recorded
+      // rather than silently skipped.
+      const phoneNumber = entry?.contact?.phone_number ?? entry?.contact?.user_id;
       if (!phoneNumber) continue;
 
       if (entry.action === 'remove') {
@@ -706,7 +713,17 @@ async function handlePostMessage(body, env) {
               continue;
             }
 
-            const role = msg?.from === customerId ? 'customer' : 'staff'; // predates A'aisyah — non-customer here was always a human
+            // Same BSUID fallback as live messages: a customer who uses a
+            // WhatsApp username has no msg.from, and a bare
+            // `msg.from === customerId` would then be false for every message
+            // they ever wrote, labelling the whole thread 'staff'. A'aisyah
+            // would read their own questions back as things the shop had
+            // already answered. Compared through normalizeId so a phone
+            // number written differently on either side still matches.
+            // Role is customer-or-staff only: this predates A'aisyah, so
+            // anything not from the customer was necessarily a human.
+            const msgFrom = msg?.from ?? msg?.from_user_id;
+            const role = samePhone(msgFrom, customerId) ? 'customer' : 'staff';
             const text = msg?.type === 'text'
               ? msg?.text?.body?.trim()
               : `[${msg?.type} message from history sync]`;
@@ -743,13 +760,60 @@ async function handlePostMessage(body, env) {
   }
 
   const message   = messages[0];
-  const senderId  = message.from;
   const msgType   = message.type;
   const messageId = message.id;
 
+  // ── Who sent this ────────────────────────────────────────────────────────
+  // message.from used to be guaranteed. It is not any more.
+  //
+  // Since mid-2026 a customer can adopt a WhatsApp username and hide their
+  // phone number from businesses. Meta then OMITS messages[].from and
+  // contacts[].wa_id entirely and identifies them by a Business-Scoped User
+  // ID (BSUID) instead, carried on messages[].from_user_id and
+  // contacts[].user_id. That omission is what produced the bare
+  // "D1_TYPE_ERROR: Type 'undefined' not supported" from saveMessage, and the
+  // literal "+undefined" seen in staff alerts.
+  //
+  // A BSUID is a first-class identifier: it is stable per business and can be
+  // replied to exactly like a phone number, so it is used as sender_id
+  // throughout with no special-casing beyond matching and display (see
+  // phone.js normalizeId / displayId).
+  const contact  = value?.contacts?.[0];
+  const senderId = message.from
+                ?? message.from_user_id
+                ?? contact?.user_id
+                ?? contact?.wa_id;
+
+  // Only present when the customer has adopted a username. Staff cannot search
+  // the Business App by BSUID, so this is what actually lets them find the
+  // person — it is threaded into every staff alert below.
+  const senderProfile = {
+    username: contact?.profile?.username,
+    name:     contact?.profile?.name,
+  };
+  const senderLabel = displayId(senderId, senderProfile);
+
   console.log(`[PostMessage] '${msgType}' from ${senderId}`);
 
-  if (delisted.includes(digitsOnly(senderId))) {
+  // Without a sender there is no conversation to attribute this to: no
+  // history to read, no one to reply to, no row that would mean anything.
+  // Bail out cleanly rather than letting it fail deeper in a D1 bind.
+  //
+  // Logs the payload's SHAPE (keys only, never message content) so that if
+  // this recurs the next log line shows exactly where the sender actually
+  // lives, instead of leaving it to guesswork again.
+  if (!senderId) {
+    console.warn(
+      `[PostMessage] '${msgType}' arrived with no sender id — ignoring. ` +
+      `message keys: [${Object.keys(message).join(', ')}]` +
+      (message.edit?.message
+        ? `, edit.message keys: [${Object.keys(message.edit.message).join(', ')}]`
+        : '')
+    );
+    return;
+  }
+
+  if (delisted.includes(normalizeId(senderId))) {
     console.log(`[PostMessage] ${senderId} is delisted — ignoring entirely, no read receipt, no D1 record`);
     return;
   }
@@ -793,7 +857,7 @@ async function handlePostMessage(body, env) {
   if (!samePhone(senderId, env.STAFF_WA_NUMBER)) {
     if (String(env.TEST_ALLOWLIST ?? '').trim() !== '*') {
       const allowed = phoneList(env.TEST_ALLOWLIST);
-      if (!allowed.includes(digitsOnly(senderId))) {
+      if (!allowed.includes(normalizeId(senderId))) {
         console.log(`[PostMessage] ${senderId} not in TEST_ALLOWLIST — skipping, manager handles via app`);
         return;
       }
@@ -870,7 +934,7 @@ async function handlePostMessage(body, env) {
 
     await sendStaffAlert(
       `📎 *Media received from customer*\n\n` +
-      `*Number:* +${senderId}\n` +
+      `*Customer:* ${senderLabel}\n` +
       `*Type:* ${msgType}\n` +
       `*Caption:* "${caption}"\n\n` +
       `Open *WhatsApp Business App* to view it.\n\n` +
@@ -900,7 +964,7 @@ async function handlePostMessage(body, env) {
 
     await sendStaffAlert(
       `📎 *${msgType.charAt(0).toUpperCase() + msgType.slice(1)} received from customer*\n\n` +
-      `*Number:* +${senderId}\n\n` +
+      `*Customer:* ${senderLabel}\n\n` +
       `Open *WhatsApp Business App* to view it.\n\n` +
       `🤖 A'aisyah did NOT reply to this and cannot see the file, but she is still handling the conversation and will answer their next message normally.\n` +
       `Send *!pause ${senderId}* to take over.`,
@@ -929,7 +993,7 @@ async function handlePostMessage(body, env) {
 
     await sendStaffAlert(
       `🎤 *Voice note received from customer*\n\n` +
-      `*Number:* +${senderId}\n\n` +
+      `*Customer:* ${senderLabel}\n\n` +
       `Open *WhatsApp Business App* to listen.\n\n` +
       `🤖 A'aisyah did NOT reply to this and cannot hear it, but she is still handling the conversation and will answer their next message normally.\n` +
       `Send *!pause ${senderId}* to take over.`,

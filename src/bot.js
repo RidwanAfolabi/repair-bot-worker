@@ -72,7 +72,7 @@ import {
 
 import { getSheetTabs, getPricingRows } from './googleSheets.js';
 
-import { samePhone } from './phone.js';
+import { samePhone, displayId } from './phone.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,9 +110,8 @@ const AI_NOTICE_EN =
 
 const AI_NOTICE_BM =
   `Salam, selamat datang ke iFix Express 👋\n\n` +
-  `Just nak bagitahu, balasan di sini mungkin datang dari AI assistant kami, A'aisyah. Team kami baca semua chat dan boleh masuk bila-bila masa.\n\n` +
-  `Mesej Cik kami simpan untuk urus pertanyaan dan follow up repair. Jangan hantar no IC, detail kad bank atau password di sini ya.\n\n` +
-  `Maklumat lanjut tentang data Cik: ${PRIVACY_POLICY_URL}`;
+  `FYI, saya A’aisyah, AI Assistant. Saya akan bantu tuan/puan step by step utk kita diagnose kerosakkan, check harga dan availability stock supaya kita boleh repair dalam kadar segera 30 minit di semua cawangan kita.\n\n` +
+  `Semantara itu anda juga boleh ke laman web official kami utk maklumat lanjut: ${PRIVACY_POLICY_URL}`;
 
 // Words that clearly signal one language and are unlikely to appear in the
 // other. Deliberately small and high-precision rather than exhaustive —
@@ -414,7 +413,7 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     const windowMinutes = Number(env.MUTE_WINDOW_MINUTES ?? 75); // default is 75 for now, just testing with short duration minutes
     await sendStaffAlert(
       `🚨 *Customer needs attention*\n\n` +
-      `*Number:* +${senderId}\n` +
+      `*Customer:* ${displayId(senderId)}\n` +
       `*Last message:* "${incomingText}"\n\n` +
       `👉 Open *WhatsApp Business App* and reply to this customer directly.\n\n` +
       `🤖 AI auto-reply is paused for this customer for ${windowMinutes} minutes, then resumes on its own if untouched.\n` +
@@ -535,7 +534,7 @@ function formatIntakeAlert(senderId, intake, saveFailed = false) {
 
   return (
     `📋 *New repair booking*\n\n` +
-    `*WhatsApp:* +${senderId}\n` +
+    `*Customer:* ${displayId(senderId)}\n` +
     rows.map(([label, value]) => `*${label}:* ${value}`).join('\n') +
     footer
   );

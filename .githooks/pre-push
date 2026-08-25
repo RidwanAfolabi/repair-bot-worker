@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# pre-push — run the test suite before a push that will trigger a deployment.
+#
+# This repo is connected to Cloudflare Workers Builds, so `git push` IS the
+# deploy. There is no GitHub Actions workflow and nothing in the repository
+# shows this; the connection lives in the Cloudflare dashboard. That makes
+# this hook the only place a broken change can be stopped before it reaches
+# real customers on the production WhatsApp line.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Deliberate escape hatch, for a docs-only or comment-only push:
+#   git push --no-verify
+#
+# NOTE: the schema-drift check is intentionally NOT run here. It queries the
+# live remote D1 and needs Cloudflare credentials, which makes it slow and
+# environment-dependent. Run `npm run check:schema` by hand whenever a change
+# touches a CREATE TABLE in db.js — see scripts/check-schema-drift.mjs for
+# why local tests can never catch that class of bug.
+
+echo "── pre-push: running test suite (a push deploys to production) ──"
+
+if ! npm test --silent; then
+  echo ""
+  echo "❌ Tests failed — push aborted."
+  echo "   This push would have deployed to the live WhatsApp number."
+  echo "   Fix the failures, or use 'git push --no-verify' to override deliberately."
+  exit 1
+fi
+
+echo ""
+echo "✅ Tests passed — pushing (Cloudflare will build and deploy)."
+exit 0

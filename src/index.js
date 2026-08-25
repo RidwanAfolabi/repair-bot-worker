@@ -47,6 +47,7 @@ import { handleIncomingMessage, handleStaffCommand } from './bot.js';
 import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting, purgeOldConversations } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
 import { digitsOnly, phoneList, samePhone, normalizeId, displayId } from './phone.js';
+import { parseBranchNumbers } from './branches.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cron schedules — must match the strings in wrangler.jsonc EXACTLY.
@@ -515,7 +516,17 @@ async function handlePostMessage(body, env) {
   // going to be appropriate. Deliberately absolute, not staff-bypassed —
   // unlike TEST_ALLOWLIST below, this isn't a testing-scope restriction,
   // it's "this number should be invisible to the bot, full stop."
-  const delisted = phoneList(env.DELISTED_NUMBERS);
+  //
+  // BRANCH_NUMBERS are folded in automatically. Those are our own shops, not
+  // customers, and they have a specific reason to message head office: doing
+  // so re-opens WhatsApp's 24-hour window, which is what lets a booking alert
+  // reach them as plain text instead of needing a template (see branches.js).
+  // Without this, that entirely sensible habit would make A'aisyah greet the
+  // branch with the AI disclosure notice and start quoting them for a repair.
+  const delisted = [
+    ...phoneList(env.DELISTED_NUMBERS),
+    ...parseBranchNumbers(env.BRANCH_NUMBERS).map(b => b.number),
+  ];
 
   // ── Full raw payload dump — TEMPORARY, remove once portfolio ID field is found ──
   if (field === 'account_update') {

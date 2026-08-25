@@ -33,6 +33,11 @@ function authHeaders(env) {
 //
 // This is the main function you'll call from bot.js for all AI replies.
 // ─────────────────────────────────────────────────────────────────────────────
+// Returns { ok, errorCode } so a caller that needs to react to a SPECIFIC
+// failure can. Existing callers ignore the return value and are unaffected.
+// The one that matters is 131047: outside the 24-hour customer service window,
+// where a plain text message is refused and only an approved template will
+// deliver (see sendTemplateMessage below).
 export async function sendTextMessage(to, text, env) {
   const response = await fetch(messagesUrl(env), {
     method:  'POST',
@@ -48,9 +53,66 @@ export async function sendTextMessage(to, text, env) {
   if (!response.ok) {
     const err = await response.text();
     console.error(`[WhatsApp] sendTextMessage failed to ${to}:`, err);
-  } else {
-    console.log(`[WhatsApp] ✅ Message sent to ${to}`);
+
+    let errorCode = null;
+    try { errorCode = JSON.parse(err)?.error?.code ?? null; } catch { /* non-JSON body */ }
+    return { ok: false, errorCode };
   }
+
+  console.log(`[WhatsApp] ✅ Message sent to ${to}`);
+  return { ok: true, errorCode: null };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sendTemplateMessage — send a pre-approved template
+//
+// The only way to reach a number that has NOT messaged this business in the
+// last 24 hours. WhatsApp opens a "customer service window" when someone
+// messages you; inside it any free-form text is allowed, outside it plain
+// text is rejected with error 131047 and only an approved template delivers.
+//
+// That is precisely the branch-notification case: a branch's WhatsApp will
+// often have said nothing to the business number all day, so a booking alert
+// sent as plain text simply never arrives.
+//
+// params fill the template's {{1}}, {{2}}, … placeholders IN ORDER. Meta
+// rejects newlines and tabs inside a parameter, so each value must be a
+// single line — the caller is responsible for keeping them short.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function sendTemplateMessage(to, { name, language = 'en', params = [] }, env) {
+  const response = await fetch(messagesUrl(env), {
+    method:  'POST',
+    headers: authHeaders(env),
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: language },
+        components: params.length
+          ? [{
+              type: 'body',
+              parameters: params.map(p => ({
+                type: 'text',
+                // Newlines would be rejected outright; collapse defensively.
+                text: String(p ?? '').replace(/\s+/g, ' ').trim(),
+              })),
+            }]
+          : [],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    console.error(`[WhatsApp] sendTemplateMessage "${name}" failed to ${to}:`, err);
+    return { ok: false };
+  }
+
+  console.log(`[WhatsApp] ✅ Template "${name}" sent to ${to}`);
+  return { ok: true };
 }
 
 

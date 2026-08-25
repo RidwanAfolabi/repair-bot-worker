@@ -58,6 +58,7 @@ import {
 import {
   sendTextMessage,
   sendStaffAlert,
+  sendTemplateMessage,
 } from './whatsapp.js';
 
 import { generateReply } from './llm.js';
@@ -72,7 +73,9 @@ import {
 
 import { getSheetTabs, getPricingRows } from './googleSheets.js';
 
-import { samePhone, displayId } from './phone.js';
+import { samePhone, displayId, isBsuid } from './phone.js';
+
+import { resolveBranch } from './branches.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,6 +388,15 @@ export async function handleIncomingMessage({ senderId, incomingText, env, messa
     } catch (err) {
       console.error(`[Bot] Intake staff alert failed for ${senderId}:`, err.message);
     }
+
+    // Branch routing is a third independent step for the same reason the two
+    // above are separate: an unreachable branch must never cost the staff
+    // alert, the saved row, or the customer's reply.
+    try {
+      await notifyBranch(senderId, intake, env);
+    } catch (err) {
+      console.error(`[Bot] Branch notify failed for ${senderId}:`, err.message);
+    }
   }
 
   // ── 11. Detect escalation trigger and mute/alert EARLY ────────────────────
@@ -536,6 +548,102 @@ function formatIntakeAlert(senderId, intake, saveFailed = false) {
     `*Customer:* ${displayId(senderId)}\n` +
     rows.map(([label, value]) => `*${label}:* ${value}`).join('\n') +
     footer
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// notifyBranch — send a confirmed booking to the branch that will do the work
+//
+// THE 24-HOUR WINDOW PROBLEM: WhatsApp only allows free-form messages to a
+// number that has messaged this business within the last 24 hours. A branch's
+// WhatsApp may say nothing to head office all day, so a plain-text booking
+// alert is rejected with error 131047 and silently never arrives.
+//
+// Handled as free-form first, template on refusal:
+//   - Branches DO often message head office during the day, and inside that
+//     window plain text is free, instant, and formats exactly like the staff
+//     alert. Worth trying first.
+//   - When the window is shut, fall back to an approved template, which is the
+//     only thing Meta will deliver. Requires BRANCH_TEMPLATE_NAME to be set and
+//     the template approved in the Meta dashboard.
+//
+// Never throws and never blocks: the staff alert and the customer's own reply
+// must not depend on whether a branch could be reached.
+// ─────────────────────────────────────────────────────────────────────────────
+async function notifyBranch(senderId, intake, env) {
+  const branch = resolveBranch(intake.branch, env.BRANCH_NUMBERS);
+
+  if (!branch) {
+    if (intake.branch) {
+      console.log(`[Bot] Intake branch "${intake.branch}" did not match any entry in BRANCH_NUMBERS — staff alert only`);
+    }
+    return;
+  }
+
+  const alert = formatIntakeAlert(senderId, intake);
+  const result = await sendTextMessage(branch.number, alert, env);
+
+  if (result?.ok) {
+    console.log(`[Bot] Booking forwarded to ${branch.name} (${branch.number})`);
+    return;
+  }
+
+  // 131047 = outside the 24-hour customer service window. Any other failure is
+  // a genuine error and a template would not fix it, so do not burn one.
+  if (result?.errorCode !== 131047) {
+    console.error(`[Bot] Branch notify to ${branch.name} failed (code ${result?.errorCode ?? 'unknown'}) — staff alert still sent`);
+    return;
+  }
+
+  if (!env.BRANCH_TEMPLATE_NAME) {
+    console.warn(
+      `[Bot] ${branch.name} is outside the 24h window and BRANCH_TEMPLATE_NAME is not set, ` +
+      `so this booking reached staff but NOT the branch. Either have the branch message ` +
+      `head office once a day to keep the window open, or configure an approved template.`
+    );
+    return;
+  }
+
+  // TWO parameters, not one per field. Meta rejects a template whose variables
+  // are dense relative to its static text ("This template has too many
+  // variables for its length"), and forbids a variable at the very start or
+  // end of the body. Four labelled fields tripped both rules, so the booking
+  // details are combined into a single line here and the template carries the
+  // labels and surrounding wording itself.
+  //
+  // Parameters also cannot contain newlines, hence the " | " separator rather
+  // than line breaks.
+  // Branch is included even though this message is going TO that branch: it
+  // confirms the booking was routed to the right shop, and survives if the
+  // message is forwarded on or read on a phone that covers more than one
+  // branch line.
+  const details = [
+    intake.customerName && `Customer: ${intake.customerName}`,
+    intake.deviceModel  && `Device: ${intake.deviceModel}`,
+    intake.fault        && `Fault: ${intake.fault}`,
+    intake.branch       && `Branch: ${intake.branch}`,
+  ].filter(Boolean).join(' | ') || 'Details not captured, see staff alert';
+
+  // A'aisyah only records a contact number when the customer gives one that
+  // DIFFERS from the WhatsApp they are messaging from, so most bookings have
+  // none. Falling back to the sender is what the branch actually needs — it is
+  // the number to call. A username customer has no number to fall back to, so
+  // say so plainly rather than printing a BSUID nobody can dial.
+  const contact = intake.contact
+    || (isBsuid(senderId) ? 'WhatsApp only, no number shared' : displayId(senderId));
+
+  const sent = await sendTemplateMessage(branch.number, {
+    name:     env.BRANCH_TEMPLATE_NAME,
+    language: env.BRANCH_TEMPLATE_LANG ?? 'en',
+    // Order must match the template body: {{1}} details, {{2}} time, {{3}} contact.
+    params: [details, intake.preferredTime || 'not specified', contact],
+  }, env);
+
+  console.log(
+    sent?.ok
+      ? `[Bot] Booking forwarded to ${branch.name} via template (outside 24h window)`
+      : `[Bot] Booking could NOT be delivered to ${branch.name} — staff alert still sent`
   );
 }
 

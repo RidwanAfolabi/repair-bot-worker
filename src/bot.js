@@ -104,14 +104,13 @@ const PRIVACY_POLICY_URL = 'https://ifixexpress.com.my/privacy-policy';
 
 const AI_NOTICE_EN =
   `Hi! Welcome to iFix Express 👋\n\n` +
-  `Quick heads up, replies here may come from our AI assistant, A'aisyah. Our team reads every chat and can step in anytime.\n\n` +
-  `We keep your messages to handle your enquiry and follow up on your repair. Please don't send IC numbers, bank card details or passwords here.\n\n` +
-  `More on how we handle your info: ${PRIVACY_POLICY_URL}`;
+  `FYI, I'm A'aisyah, an AI Assistant. I'll help you step by step so we can diagnose the fault, check prices and stock availability, so we can get your repair done quickly, within 30 minutes at any of our branches.\n\n` +
+  `In the meantime you can also visit our official website for more info about our AI assistant: ${PRIVACY_POLICY_URL}`;
 
 const AI_NOTICE_BM =
   `Salam, selamat datang ke iFix Express 👋\n\n` +
   `FYI, saya A’aisyah, AI Assistant. Saya akan bantu tuan/puan step by step utk kita diagnose kerosakkan, check harga dan availability stock supaya kita boleh repair dalam kadar segera 30 minit di semua cawangan kita.\n\n` +
-  `Semantara itu anda juga boleh ke laman web official kami utk maklumat lanjut: ${PRIVACY_POLICY_URL}`;
+  `Semantara itu anda juga boleh ke laman web official kami utk maklumat lanjut tentang AI assistant kami: ${PRIVACY_POLICY_URL}`;
 
 // Words that clearly signal one language and are unlikely to appear in the
 // other. Deliberately small and high-precision rather than exhaustive —

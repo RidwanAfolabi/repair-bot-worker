@@ -37,9 +37,17 @@ function normalizeBranch(value) {
 // ─────────────────────────────────────────────────────────────────────────────
 export function parseBranchNumbers(raw) {
   return String(raw ?? '')
-    .split(',')
+    // Split on commas, newlines OR semicolons. The documented format is
+    // comma-separated, but this is pasted by hand into a dashboard textarea
+    // where putting each branch on its own line is the natural thing to do.
+    // Splitting on commas alone turned a newline-separated list into ONE
+    // entry whose "number" was every branch's digits concatenated — which is
+    // exactly how a correctly-configured secret still failed to route a
+    // real booking in production.
+    .split(/[,;\n\r]+/)
     .map(pair => {
-      const idx = pair.indexOf('=');
+      // Accept "Name=number" or "Name:number" for the same reason.
+      const idx = pair.search(/[=:]/);
       if (idx < 0) return null;
 
       const name   = pair.slice(0, idx).trim();

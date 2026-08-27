@@ -1,0 +1,38 @@
+# Template for local `wrangler dev` secrets.
+#
+# NOT currently in use — as of this file's creation, nobody has run
+# `wrangler dev` against real credentials, and no `.dev.vars` exists in this
+# project. All local testing happens through `npm test` (vitest), which mocks
+# WhatsApp, the LLM, and Google Sheets entirely — it needs none of this.
+#
+# Real values live ONLY in Cloudflare (Workers & Pages > repair-bot-worker >
+# Settings > Variables and Secrets). They cannot be read back once set —
+# `npx wrangler secret list` shows names only, never values — so if you want
+# to run `wrangler dev` against real services, copy this file to `.dev.vars`
+# and fill each value in from the Cloudflare dashboard, or from wherever your
+# own copies of these credentials are kept (password manager, Meta/Google
+# consoles, etc). `.dev.vars` is gitignored; this example file is not.
+#
+# vars declared in wrangler.jsonc (BOT_ENABLED, LLM_PROVIDER, etc.) are
+# already available to `wrangler dev` automatically and do not belong here —
+# this file is only for the SECRETS listed in README.md.
+
+WA_TOKEN=
+WA_PHONE_NUMBER_ID=
+WA_VERIFY_TOKEN=
+STAFF_WA_NUMBER=
+
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+
+GOOGLE_SERVICE_ACCOUNT_EMAIL=
+GOOGLE_PRIVATE_KEY=
+
+TEST_ALLOWLIST=
+DELISTED_NUMBERS=
+
+BRANCH_NUMBERS=
+BRANCH_TEMPLATE_NAME=
+
+META_APP_SECRET=
+EMBEDDED_SIGNUP_URL=

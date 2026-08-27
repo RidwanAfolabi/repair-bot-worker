@@ -14,12 +14,14 @@ vi.mock("../src/googleSheets.js", () => ({
   getSheetTabs: vi.fn(async () => []), getPricingRows: vi.fn(async () => []),
 }));
 
-import { handleIncomingMessage, parseIntakeBlock } from "../src/bot.js";
-import { initDb, saveMessage } from "../src/db.js";
+import { handleIncomingMessage, parseIntakeBlock, handleStaffCommand } from "../src/bot.js";
+import { initDb, saveMessage, setManualMute } from "../src/db.js";
 import { generateReply } from "../src/llm.js";
 import { sendTextMessage, sendStaffAlert } from "../src/whatsapp.js";
 
 const C = "60111111111";
+const STAFF_NUM = "60122222222";
+const BSUID = "MY.1111528448110368";
 const NOW = () => Math.floor(Date.now() / 1000);
 
 const CONFIRMATION = "Ok Cik Amin, dah noted semua!";
@@ -199,4 +201,73 @@ describe("escalation", () => {
     const row = await env.DB.prepare("SELECT * FROM escalations WHERE sender_id = ?").bind(C).first();
     expect(row).toBeNull();
   }, 20000);
+});
+
+
+describe("staff commands — BSUID customers", () => {
+  const lastReply = () => vi.mocked(sendTextMessage).mock.calls.at(-1)?.[1] ?? "";
+
+  it("REGRESSION: !pause confirmation shows a plain BSUID, not '+MY....'", async () => {
+    await handleStaffCommand(`!pause ${BSUID}`, env, STAFF_NUM);
+    expect(lastReply()).toContain(BSUID);
+    expect(lastReply()).not.toContain(`+${BSUID}`);
+  });
+
+  it("REGRESSION: !resume confirmation shows a plain BSUID, not '+MY....'", async () => {
+    await handleStaffCommand(`!resume ${BSUID}`, env, STAFF_NUM);
+    expect(lastReply()).toContain(BSUID);
+    expect(lastReply()).not.toContain(`+${BSUID}`);
+  });
+
+  it("REGRESSION: !muted lists a paused BSUID customer without a '+' prefix", async () => {
+    await setManualMute(env.DB, BSUID);
+    await handleStaffCommand("!muted", env, STAFF_NUM);
+    expect(lastReply()).toContain(BSUID);
+    expect(lastReply()).not.toContain(`+${BSUID}`);
+  });
+
+  it("a phone number still gets its '+' prefix (displayId, unaffected)", async () => {
+    await handleStaffCommand("!pause 60111111199", env, STAFF_NUM);
+    expect(lastReply()).toContain("+60111111199");
+  });
+
+  it("!pause and !resume actually mute/unmute a BSUID customer", async () => {
+    await handleStaffCommand(`!pause ${BSUID}`, env, STAFF_NUM);
+    const row = await env.DB.prepare("SELECT * FROM escalations WHERE sender_id = ?").bind(BSUID).first();
+    expect(row.escalated).toBe(1);
+    expect(row.mute_type).toBe("manual");
+
+    await handleStaffCommand(`!resume ${BSUID}`, env, STAFF_NUM);
+    const after = await env.DB.prepare("SELECT * FROM escalations WHERE sender_id = ?").bind(BSUID).first();
+    expect(after.escalated).toBe(0);
+  });
+});
+
+
+describe("staff commands — pasted bold command still parses", () => {
+  // Every alert bolds its command as *!pause X*. WhatsApp's underlying
+  // stored text keeps the literal asterisks even though they render as bold,
+  // so copying that phrase can carry them into the paste — more likely now
+  // that a BSUID target is too long to type reliably.
+  it("REGRESSION: leading and trailing asterisks still parse", async () => {
+    const handled = await handleStaffCommand(`*!pause ${BSUID}*`, env, STAFF_NUM);
+    expect(handled).toBe(true);
+    const row = await env.DB.prepare("SELECT * FROM escalations WHERE sender_id = ?").bind(BSUID).first();
+    expect(row.escalated).toBe(1);
+  });
+
+  it("a leading asterisk with no trailing one still parses", async () => {
+    const handled = await handleStaffCommand(`*!pause ${BSUID}`, env, STAFF_NUM);
+    expect(handled).toBe(true);
+  });
+
+  it("!help with no asterisks is unaffected", async () => {
+    const handled = await handleStaffCommand("!help", env, STAFF_NUM);
+    expect(handled).toBe(true);
+    expect(vi.mocked(sendTextMessage).mock.calls.at(-1)[1]).toContain("Commands");
+  });
+
+  it("a genuinely unrecognised command still returns false", async () => {
+    expect(await handleStaffCommand("*not a real command*", env, STAFF_NUM)).toBe(false);
+  });
 });

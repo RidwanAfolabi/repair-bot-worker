@@ -678,6 +678,8 @@ function shouldEscalate(reply) {
 // Per-customer:
 //   !pause 60123456789   — manually pause bot for one customer, indefinite
 //   !resume 60123456789  — resume bot for one customer
+//   (accepts a BSUID in place of a number too, for a customer using a
+//   WhatsApp username — see phone.js)
 //
 // Global (instant, no deploy needed — separate from BOT_ENABLED in
 // wrangler.jsonc, which remains a developer-level emergency stop underneath
@@ -693,19 +695,27 @@ function shouldEscalate(reply) {
 // Returns true if the text was a recognised command, false otherwise.
 // ─────────────────────────────────────────────────────────────────────────────
 export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBER) {
-  const parts  = text.trim().split(/\s+/);
+  // Staff can copy a command straight out of an alert rather than retype it —
+  // more likely now that a BSUID target is far too long to type reliably.
+  // Every alert bolds its command as *!pause X*, and WhatsApp's underlying
+  // stored text keeps the literal asterisks even though they render as bold,
+  // not markup — so a raw copy of that phrase can carry them into the paste.
+  // Stripped defensively so "*!pause X*" still parses as "!pause X" whether
+  // or not that copy path actually preserves them.
+  const cleaned = text.trim().replace(/^\*+/, '').replace(/\*+$/, '');
+  const parts  = cleaned.split(/\s+/);
   const cmd    = parts[0]?.toLowerCase();
   const target = parts[1];
 
   if (cmd === '!pause') {
     if (!target) {
-      await sendTextMessage(replyTo, `⚠️ Missing number. Usage: !pause <number>\nExample: !pause 60123456789`, env);
+      await sendTextMessage(replyTo, `⚠️ Missing number. Usage: !pause <number or BSUID>\nExample: !pause 60123456789`, env);
       return true;
     }
     await setManualMute(env.DB, target);
     await sendTextMessage(
       replyTo,
-      `✅ AI auto-reply paused for +${target} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
+      `✅ AI auto-reply paused for ${displayId(target)} (stays off until !resume — no auto-resume).\nOpen WhatsApp Business App to reply to them directly.`,
       env
     );
     return true;
@@ -713,11 +723,11 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
 
   if (cmd === '!resume') {
     if (!target) {
-      await sendTextMessage(replyTo, `⚠️ Missing number. Usage: !resume <number>\nExample: !resume 60123456789`, env);
+      await sendTextMessage(replyTo, `⚠️ Missing number. Usage: !resume <number or BSUID>\nExample: !resume 60123456789`, env);
       return true;
     }
     await resolveEscalation(env.DB, target);
-    await sendTextMessage(replyTo, `✅ AI auto-reply resumed for +${target}.`, env);
+    await sendTextMessage(replyTo, `✅ AI auto-reply resumed for ${displayId(target)}.`, env);
     // No message sent to the customer here — resuming silently. A'aisyah
     // will only speak again once the customer sends their next message.
     return true;
@@ -765,7 +775,7 @@ export async function handleStaffCommand(text, env, replyTo = env.STAFF_WA_NUMBE
     const lines = mutes.map(m => {
       const minutesAgo = Math.floor((nowSeconds - m.escalated_at) / 60);
       const typeLabel  = m.mute_type === 'manual' ? 'manual' : 'auto';
-      return `+${m.sender_id} — ${typeLabel}, ${minutesAgo}m ago`;
+      return `${displayId(m.sender_id)} — ${typeLabel}, ${minutesAgo}m ago`;
     });
 
     await sendTextMessage(replyTo, `🔇 *Paused customers*\n\n${lines.join('\n')}`, env);

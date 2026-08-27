@@ -75,7 +75,7 @@ import { getSheetTabs, getPricingRows } from './googleSheets.js';
 
 import { samePhone, displayId, isBsuid } from './phone.js';
 
-import { resolveBranch } from './branches.js';
+import { resolveBranch, parseBranchNumbers } from './branches.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -528,7 +528,7 @@ export function parseIntakeBlock(reply) {
 // ─────────────────────────────────────────────────────────────────────────────
 function formatIntakeAlert(senderId, intake, saveFailed = false) {
   const rows = [
-    ['Customer',       intake.customerName],
+    ['Customer name',  intake.customerName],
     ['Device',         intake.deviceModel],
     ['Fault',          intake.fault],
     ['Branch',         intake.branch],
@@ -576,7 +576,19 @@ async function notifyBranch(senderId, intake, env) {
 
   if (!branch) {
     if (intake.branch) {
-      console.log(`[Bot] Intake branch "${intake.branch}" did not match any entry in BRANCH_NUMBERS — staff alert only`);
+      // Says WHICH failure it was. The earlier version printed the same line
+      // whether BRANCH_NUMBERS was unset, unparseable, or simply lacked that
+      // branch — so a real routing failure could not be diagnosed from the
+      // log at all. Branch NAMES are listed (never their numbers) so the
+      // mismatch is visible at a glance.
+      const configured = parseBranchNumbers(env.BRANCH_NUMBERS);
+      console.warn(
+        configured.length === 0
+          ? `[Bot] Intake branch "${intake.branch}" not routed — BRANCH_NUMBERS is unset or unparseable ` +
+            `(expected "Name=number" pairs separated by commas or newlines). Staff alert sent.`
+          : `[Bot] Intake branch "${intake.branch}" matched none of the ${configured.length} configured ` +
+            `branches [${configured.map(b => b.name).join(', ')}]. Staff alert sent.`
+      );
     }
     return;
   }

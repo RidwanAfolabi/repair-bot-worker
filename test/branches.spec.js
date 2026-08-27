@@ -339,3 +339,48 @@ describe("template contact parameter", () => {
     for (const p of lastParams()) expect(String(p)).not.toMatch(/[\n\t]/);
   }, 20000);
 });
+
+
+describe("REGRESSION: config format tolerance", () => {
+  // A correctly-set BRANCH_NUMBERS secret still failed to route a real Pendang
+  // booking in production. The value was fine; the parser only split on
+  // commas, so a newline-separated paste collapsed into one bogus entry.
+  const CASES = {
+    "commas (documented)": "Alor Setar=601,Changlun=602,Pendang=603",
+    "newlines":            "Alor Setar=601\nChanglun=602\nPendang=603",
+    "CRLF newlines":       "Alor Setar=601\r\nChanglun=602\r\nPendang=603",
+    "semicolons":          "Alor Setar=601;Changlun=602;Pendang=603",
+    "colon separator":     "Alor Setar:601,Changlun:602,Pendang:603",
+    "spaces around =":     "Alor Setar = 601 , Changlun = 602 , Pendang = 603",
+    "trailing newline":    "Alor Setar=601,Changlun=602,Pendang=603\n",
+    "blank lines mixed in":"Alor Setar=601\n\nChanglun=602\n\nPendang=603\n",
+  };
+
+  for (const [label, cfg] of Object.entries(CASES)) {
+    it(`parses ${label}`, () => {
+      const parsed = parseBranchNumbers(cfg);
+      expect(parsed).toHaveLength(3);
+      expect(resolveBranch("Pendang", cfg)?.number).toBe("603");
+      expect(resolveBranch("Alor Setar", cfg)?.number).toBe("601");
+    });
+  }
+
+  it("still rejects genuine rubbish rather than inventing entries", () => {
+    expect(parseBranchNumbers("just some text")).toEqual([]);
+    expect(parseBranchNumbers("Name=")).toEqual([]);
+    expect(parseBranchNumbers("=60123")).toEqual([]);
+  });
+
+  it("logs WHICH failure it was, naming the configured branches", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await book("Kuala Lumpur");
+    expect(warn.mock.calls.flat().join(" ")).toMatch(/matched none of the 5 configured branches/);
+
+    warn.mockClear();
+    await book("Pendang", { BRANCH_NUMBERS: "" });
+    expect(warn.mock.calls.flat().join(" ")).toMatch(/unset or unparseable/);
+
+    warn.mockRestore();
+  }, 25000);
+});

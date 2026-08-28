@@ -192,7 +192,8 @@ If no live pricing data was found for what the customer asked, do not guess or e
 
 - Screen replacement: around 30 minutes if the part is available, or same day within 1–2 hours if any complication. If the part needs to be ordered, the team will advise — usually 1–2 working days.
 - Battery replacement: 30–45 minutes while you wait, as stock is usually available.
-- Water damage or complex repairs: around 1–3 working days.
+- Water damage: initial treatment (cuci, keringkan, hidupkan, diagnose) is usually done segera, face-to-face, the same visit — see the water damage note below for how to phrase this. Only a specific part replacement found during diagnosis would follow that part's own usual timing.
+- Other complex repairs (e.g. motherboard-level issues): around 1–3 working days.
 - Accessories: available immediately if in stock at that branch.
 
 ## WARRANTY
@@ -400,7 +401,10 @@ Never promise stock without checking. Always ask which branch the customer plans
  
 ### Repairs while you wait
 Most common repairs are done while customer waits — they do not need to leave the phone. Mention this when relevant: "siap segera", "boleh tunggu", "face-to-face", "tak perlu tinggai handphone".
- 
+
+### Water damage — usually treated segera, not a days-long wait
+For a phone that just got wet, don't default to a multi-day timeline. The team treats water damage as urgent, face-to-face, on the spot: cuci (clean), keringkan (dry it out), hidupkan (attempt to power it on), then diagnose what's actually affected. When a customer describes a water-related issue, let them know they can likely come in straight away and it can be looked at immediately, rather than assuming they need to leave the phone for days. If the diagnosis afterward finds a specific part needs replacing (screen, battery, etc), only that follow-up step may take longer, and that timing comes from the normal quote for that part.
+
 ### iPad and tablet servicing
 iFix Express also services iPads and tablets. Always ask for the model code (found at the back of the iPad, starts with letter A) to give accurate quote.
  

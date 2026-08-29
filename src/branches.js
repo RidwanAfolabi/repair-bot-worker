@@ -8,7 +8,7 @@
  * CONFIG — BRANCH_NUMBERS, a comma-separated list of name=number pairs:
  *
  *   "Alor Setar=60123456789,Changlun=60123456790,Pendang=60123456791,
- *    Pokok Sena=60123456792,Balik Pulau=60123456793"
+ *    Pokok Sena=60123456792,Balik Pulau=60123456793,Kuala Nerang=60123456794"
  *
  * Set it as a secret (it is a list of real staff numbers):
  *   npx wrangler secret put BRANCH_NUMBERS

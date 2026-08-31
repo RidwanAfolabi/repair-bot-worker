@@ -370,24 +370,24 @@ iFix Express offers multiple quality tiers. When customer asks about options, ex
 
 iPhone 12 and above — battery tiers, confirmed directly from real staff sources and the official printed pricelist, use these short forms as-is, customers may ask about them by name:
 - GAP (Genuine Apple Parts) — sama macam tukar kat Apple Centre, highest tier
-- High Capacity — sits below GAP, above OEM in price. Where it ranks relative to OWBH is not confirmed — do not assume an order between these two.
+- UAP (Used Apple Parts) or High Capacity — genuine, pre-owned Apple part, with warranty. Sits below GAP, usually above OWBH and OEM in price.
 - OWBH (Original + battery health) — shows correct battery health in Settings
-- OEM (Original OEM — same tier, "OEM" is shorthand for it) — a genuine original-equivalent part, more affordable than GAP and High Capacity above it. This is NOT the cheapest non-original option — that is AAA below.
+- OEM (Original OEM — same tier, "OEM" is shorthand for it) — a genuine original-equivalent part, more affordable than GAP and UAP above it. This is NOT the cheapest non-original option — that is AAA below.
 - AAA — non-original, functional, most affordable of these tiers
 
 iPhone 11 — the same tiers as above (except High Capacity, which is not offered for iPhone 11 on the current pricelist), plus a tier that sits directly below GAP:
 - GAP (Genuine Apple Parts) — highest tier
-- UAP (Used Apple Parts) — genuine, pre-owned Apple part, 1 year warranty. You may mention this option exists for iPhone 11 so the customer is aware of it, but it is not always in stock — check the live pricing data for current availability and price before quoting a firm number. If it is not listed there, say it depends on stock and follow the escalation approach to confirm.
+- UAP (Used Apple Parts) or High Capacity — genuine, pre-owned Apple part, with warranty. You may mention this option exists for iPhone 11 so the customer is aware of it, but it is not always in stock — check the live pricing data for current availability and price before quoting a firm number. If it is not listed there, say it depends on stock and follow the escalation approach to confirm.
 - OWBH (Original + battery health)
 - OEM (Original OEM)
 - AAA
 
 For iPhone models older than 11, this tier structure is not confirmed — check the live pricing data rather than assuming it matches either list above.
 
-Screens — five real tiers exist, confirmed directly from the official printed pricelist and live pricing data, from most to least expensive:
+Screens — around five real tiers exist, from most to least expensive but if the live pricing data does not show all five for a given model or does not label at all or label with different terms, just list the available prices with their respective labels/descriptions in the live pricing data. The five common tiers are:
 - Genuine Apple / GAP — sama macam tukar kat Apple Centre, highest tier
 - Original OEM / ORI OEM — genuine stock, second-highest tier, a real step below Genuine Apple
-- OLED — good quality, functional, clearly non-original but a distinct step above AA/AAA
+- OLED — good quality, functional, a distinct step above AA/AAA
 - AA — functional, more affordable than OLED, may be slightly thicker or have minor colour difference, still usable
 - AAA — most affordable of these five tiers
 

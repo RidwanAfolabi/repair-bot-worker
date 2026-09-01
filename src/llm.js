@@ -27,7 +27,7 @@
  * below and one more case in the dispatcher.
  */
 
-import { buildSystemPrompt } from './prompt.js';
+import { buildSystemPrompt, STATIC_SYSTEM_PROMPT, buildDynamicContext } from './prompt.js';
 
 export async function generateReply(history, newMessage, env, pricingContext = '') {
   const provider = (env.LLM_PROVIDER ?? 'gemini').toLowerCase();
@@ -133,6 +133,32 @@ async function callGemini(history, newMessage, env, pricingContext) {
 //   - max_tokens is required, not optional
 //   - Response text is at content[0].text (content is an array of blocks)
 //
+// PROMPT CACHING — see prompt.js's file header for the split this depends on.
+// `system` is STATIC_SYSTEM_PROMPT alone (never changes) with an explicit
+// `cache_control` breakpoint on it, so Claude reprocesses it at ~1/10th price
+// instead of paying full price for the same ~44K chars on every single
+// customer message. The two genuinely dynamic pieces (live time, live
+// pricing) go through buildDynamicContext() and are attached as their own
+// block on the NEWEST user turn instead — after the cached prefix, never
+// inside it, so they can change every request without invalidating the cache.
+// (Sonnet 5 does not support mid-conversation `role: "system"` messages,
+// which is the officially recommended place for this on models that do — see
+// prompt-caching docs § Mid-conversation system messages — so this uses the
+// documented fallback for models without that: text in a user turn.)
+//
+// A second, independent cache layer: top-level `cache_control` below asks
+// Claude to also auto-cache the growing MESSAGE history for this specific
+// customer, on top of the system-prompt cache shared across all customers.
+// Each reply to the same customer resends their whole prior conversation
+// (bot.js re-fetches it fresh from D1 every time) — with this on, only the
+// newest turn is billed at full price; everything already seen is a cache
+// read. Works fully while a conversation stays under HISTORY_MESSAGE_LIMIT
+// (32) messages; past that the sliding window drops the oldest message each
+// time, which shifts the whole array and costs that customer's next reply a
+// cache miss on the history portion specifically — the system-prompt cache
+// is unaffected either way, since it's shared across every customer, not
+// per-conversation.
+//
 // NOTE — Claude Sonnet 5 (and Opus 4.7+) no longer accept temperature/top_p/
 // top_k at all; sending any of them, even at "default" values, returns a 400.
 // Deliberately not sent here. Tone is controlled entirely through the system
@@ -152,9 +178,22 @@ async function callGemini(history, newMessage, env, pricingContext) {
 // Override via env.CLAUDE_MODEL without touching this file.
 // ─────────────────────────────────────────────────────────────────────────────
 async function callClaude(history, newMessage, env, pricingContext) {
+  const dynamicContext = buildDynamicContext(pricingContext);
+
   const messages = [
     ...history.map(m => ({ role: toApiRole(m.role), content: toApiText(m.role, m.text) })),
-    { role: 'user', content: newMessage },
+    {
+      role: 'user',
+      content: [
+        // Live time + live pricing — always changes, never cached. Its own
+        // block (rather than concatenated into the customer's own text) so
+        // it stays visually distinct from what the customer actually typed;
+        // both pieces already carry their own "## CURRENT ..." headers (see
+        // businessHours.js / pricing.js), so there is no ambiguity either way.
+        { type: 'text', text: dynamicContext },
+        { type: 'text', text: newMessage },
+      ],
+    },
   ];
 
   const model = env.CLAUDE_MODEL ?? 'claude-sonnet-5';
@@ -168,10 +207,13 @@ async function callClaude(history, newMessage, env, pricingContext) {
     },
     body: JSON.stringify({
       model,
-      system:     buildSystemPrompt(pricingContext),
+      system: [
+        { type: 'text', text: STATIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      ],
       messages,
-      max_tokens: 500,
-      thinking:   { type: 'disabled' },
+      max_tokens:    500,
+      thinking:      { type: 'disabled' },
+      cache_control: { type: 'ephemeral' },   // auto-caches the growing per-customer history tail
     }),
   });
 

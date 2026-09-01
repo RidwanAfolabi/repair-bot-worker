@@ -4,13 +4,32 @@
  * TO UPDATE: edit this file and run `npx wrangler deploy`
  * No other files need to change.
  *
- * buildSystemPrompt(pricingContext, now) — pricingContext is an optional
- * block of live price-lookup text (see pricing.js formatPricingContext)
- * appended at the very end of the prompt. Callers that have no pricing data
- * for this message just pass nothing — it defaults to an empty string.
- * now is an optional Date (defaults to the real current time) used to
- * compute the live open/closed status block — see businessHours.js. Tests
- * pass an explicit Date to check specific moments deterministically.
+ * Split into three exports for prompt caching (see llm.js callClaude):
+ *
+ *   STATIC_SYSTEM_PROMPT — the ~44K-char rulebook: persona, tone, branches,
+ *     pricing policy, escalation rules, real conversation examples. A plain
+ *     const, computed once at module load, byte-identical on every request
+ *     forever. This is what gets marked cache_control on Claude, so it is
+ *     reprocessed at ~1/10th price instead of in full on every single
+ *     customer message.
+ *
+ *   buildDynamicContext(pricingContext, now) — the two genuinely per-request
+ *     pieces: the live open/closed time block and the live pricing lookup.
+ *     Deliberately kept OUT of STATIC_SYSTEM_PROMPT. Caching is a byte-exact
+ *     PREFIX match — interpolating either of these into the big rulebook
+ *     (the way this file used to work, with the time block sitting right
+ *     near the top) meant the whole ~44K chars downstream of it looked
+ *     "new" on every single request, since the time block changes every
+ *     minute. Kept as their own block so callers can attach them AFTER the
+ *     cached prefix instead of inside it.
+ *
+ *   buildSystemPrompt(pricingContext, now) — STATIC_SYSTEM_PROMPT +
+ *     buildDynamicContext(...) combined into one string, for callers that
+ *     just want the whole thing: Gemini (no explicit cache_control of its
+ *     own, but still benefits from stable content coming first for its own
+ *     automatic caching) and anything reading the prompt as a single block
+ *     (tests). now is an optional Date (defaults to the real current time);
+ *     tests pass an explicit one to check specific moments deterministically.
  *
  * Key principle: NO hardcoded phrases in any language inside instructions.
  * All example phrases are illustrative of TONE only, never templates to copy.
@@ -20,18 +39,15 @@
 //   2. REAL CONVERSATION EXAMPLES — kept as close to original as possible
 //      so Gemini learns the actual iFix Express voice, not a cleaned-up version
  *
- * Last updated: August 12 2026
+ * Last updated: August 28 2026
  * Status: Production-ready
  */
 
 import { formatBusinessTimeContext, OPERATING_HOURS_LABEL } from './businessHours.js';
 
-export function buildSystemPrompt(pricingContext = '', now = new Date()) {
-  return `You are A'aisyah, the friendly customer assistant for iFix Express — a phone repair and mobile accessories shop with branches in Kedah and Penang, Malaysia.
+export const STATIC_SYSTEM_PROMPT = `You are A'aisyah, the friendly customer assistant for iFix Express — a phone repair and mobile accessories shop with branches in Kedah and Penang, Malaysia.
 
 You work on the same WhatsApp number the iFix Express manager personally uses — this isn't a separate bot line. Think of yourself as their assistant, helping answer messages quickly when they're busy on the shop floor, exactly like a sharp colleague covering the phone. Your job is to help customers with their questions, guide them through repair enquiries, and make them feel like they're chatting with a warm, knowledgeable member of the iFix Express team — not a robot.
-
-${formatBusinessTimeContext(now)}
 
 ## WHO YOU ARE
 
@@ -687,7 +703,29 @@ Customer: Hidup
 A'aisyah: Okay, confirm 100% battery je masalahnya
 Customer: Takpa, nanti saya kena pi service center dia terus
 A'aisyah: Baik
-
-${pricingContext}
 `;
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildDynamicContext — the two genuinely per-request pieces, kept separate
+// from STATIC_SYSTEM_PROMPT above so that block stays byte-identical across
+// requests and can be cached. See llm.js callClaude for how these get
+// attached to the newest user turn, AFTER the cached system prefix, instead
+// of being folded into the system prompt itself.
+// ─────────────────────────────────────────────────────────────────────────────
+export function buildDynamicContext(pricingContext = '', now = new Date()) {
+  const parts = [formatBusinessTimeContext(now)];
+  if (pricingContext) parts.push(pricingContext);
+  return parts.join('\n\n');
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildSystemPrompt — STATIC_SYSTEM_PROMPT + buildDynamicContext combined
+// into one string, for callers that want the whole thing at once (Gemini,
+// tests). See the file header for why Claude does NOT use this — it wants
+// the static and dynamic pieces kept apart so only the static part is cached.
+// ─────────────────────────────────────────────────────────────────────────────
+export function buildSystemPrompt(pricingContext = '', now = new Date()) {
+  return `${STATIC_SYSTEM_PROMPT}\n\n${buildDynamicContext(pricingContext, now)}`;
 }

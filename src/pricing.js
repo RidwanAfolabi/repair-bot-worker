@@ -146,12 +146,28 @@ function normalize(text) {
 // produces (the & gets stripped as non-alphanumeric), not the raw tab title.
 const FALLBACK_TAB_NAME = 'SERVICES ACCESSORIES';
 
-// Words that appear as a different word than the brand's real tab name —
-// "Apple" doesn't literally appear in the sheet anywhere (it's all "IPHONE"),
-// so plain substring matching would never connect the two on its own.
+// Words that never literally appear on the tab they should resolve to. Two
+// distinct reasons an alias ends up here:
+//   - A different name for the same brand ("Apple" -> tab is "IPHONE")
+//   - A product LINE/SUB-BRAND name, where customers essentially never say
+//     the parent brand at all. Huawei-family phones are the real example:
+//     customers ask about "Honor X9c", "Nova 11", "Mate 50 Pro" directly —
+//     the word "Huawei" almost never comes up, even though every one of
+//     those models lives in the sheet's single "Huawei" tab.
 // Add more here as real examples come up — deliberately starting small.
+//
+// Matched on WHOLE WORDS only (see the \b-bounded check below), not as a
+// bare substring of the customer's text. That matters here specifically:
+// normalize() keeps spaces, so a naive substring check on "MATE" would
+// also fire on "ESTIMATE" ("boleh bagi estimate harga") and on "NOVA"
+// inside "INNOVATION" — both plausible things a customer might type in a
+// repair-price chat. Whole-word matching means the alias only fires when
+// that exact word appears on its own.
 const BRAND_ALIASES = {
   APPLE: 'IPHONE',
+  HONOR: 'HUAWEI',
+  NOVA:  'HUAWEI',
+  MATE:  'HUAWEI',
 };
 
 // Symbol-based shorthand that can't go through BRAND_ALIASES — normalize()
@@ -261,7 +277,11 @@ export function matchBrandTab(customerText, tabTitles) {
 
   let aliasText = normText;
   for (const [alias, canonical] of Object.entries(BRAND_ALIASES)) {
-    if (normText.includes(alias)) {
+    // Whole-word match, not a bare substring — normalize() keeps spaces
+    // between words, so a plain .includes() would also fire on "MATE"
+    // inside "ESTIMATE" or "NOVA" inside "INNOVATION". \b requires a real
+    // word boundary on both sides, which a mid-word substring never has.
+    if (new RegExp(`\\b${alias}\\b`).test(normText)) {
       aliasText += ' ' + canonical;
     }
   }

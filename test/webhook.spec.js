@@ -133,14 +133,68 @@ describe("sender resolution", () => {
 describe("media", () => {
   const media = (type) => msgs([{ from: C, id: `w.${Math.random()}`, type, [type]: {} }]);
 
-  it("REGRESSION: sends nothing to the customer, but alerts staff", async () => {
+  it("REGRESSION: sends nothing to the customer, and alerts staff when it's a fresh event", async () => {
     for (const type of ["image", "video", "document", "audio"]) {
+      await env.DB.prepare("DELETE FROM conversations").run();   // each type tested as its own fresh event
       vi.mocked(sendTextMessage).mockClear();
       vi.mocked(sendStaffAlert).mockClear();
       await post(media(type));
       expect(replied()).toBe(false);
       expect(vi.mocked(sendStaffAlert)).toHaveBeenCalledTimes(1);
     }
+  }, 30000);
+
+  it("REGRESSION: a burst of images alerts staff only once, not once per image", async () => {
+    await post(media("image"));
+    await post(media("image"));
+    await post(media("image"));
+    await post(media("image"));
+    await post(media("image"));
+
+    expect(vi.mocked(sendStaffAlert)).toHaveBeenCalledTimes(1);
+  }, 30000);
+
+  it("every item in the burst is still recorded in D1, not just the first", async () => {
+    await post(media("image"));
+    await post(media("image"));
+    await post(media("image"));
+
+    const r = await rows();
+    expect(r).toHaveLength(3);
+    expect(r.every(row => row.text.includes("you cannot see it"))).toBe(true);
+  }, 30000);
+
+  it("a burst stays one alert even when it mixes media types (image, then voice note)", async () => {
+    await post(media("image"));
+    await post(media("video"));
+    await post(media("audio"));
+
+    expect(vi.mocked(sendStaffAlert)).toHaveBeenCalledTimes(1);
+  }, 30000);
+
+  it("a customer text message in between BREAKS the burst — the next media alerts again", async () => {
+    await post(media("image"));
+    await post(text(C, "ok wait sat"));
+    await post(media("image"));
+
+    // one for the first image, one for the second (the text in between reset it)
+    expect(vi.mocked(sendStaffAlert)).toHaveBeenCalledTimes(2);
+  }, 30000);
+
+  it("an AI reply in between also breaks the burst", async () => {
+    await post(media("image"));
+    await saveMessage(env.DB, { senderId: C, role: "ai-assistant", text: "noted, let me know if you need anything else" });
+    await post(media("image"));
+
+    expect(vi.mocked(sendStaffAlert)).toHaveBeenCalledTimes(2);
+  }, 30000);
+
+  it("each customer still gets their own independent burst — not shared across customers", async () => {
+    const other = "60199999999";
+    await post(media("image"));                                            // C's first
+    await post(msgs([{ from: other, id: "w.other", type: "image", image: {} }]));  // other customer's first
+
+    expect(vi.mocked(sendStaffAlert)).toHaveBeenCalledTimes(2);
   }, 30000);
 
   it("logs it as context that does not read as a staff handoff", async () => {

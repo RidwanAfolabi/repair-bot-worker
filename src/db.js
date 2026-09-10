@@ -238,6 +238,39 @@ export async function getLastEngagementAt(db, senderId) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// isContinuingUnalertedMediaRun — true if the SINGLE most recent conversation
+// row for this sender is itself an un-followed-up media placeholder (image,
+// video, document, or voice note — see index.js), meaning this new media item
+// is a continuation of the same unbroken burst rather than a fresh event.
+//
+// Used to coalesce staff alerts: a customer sending 3-5 images/voice notes in
+// one go used to trigger one alert PER item. Checking the text of the prior
+// row (all four placeholder texts share the phrase "staff have been
+// notified") rather than tracking separate state means no schema change and
+// no extra bookkeeping — it reuses data already being written regardless.
+//
+// Deliberately type-agnostic: an image followed immediately by a voice note
+// still counts as one unbroken run, matching "whether video, voice note etc."
+// Any OTHER row in between — a customer text, an AI reply, a staff reply —
+// breaks the run naturally, since none of those contain the marker phrase,
+// so the next media item alerts again as a genuinely new event.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function isContinuingUnalertedMediaRun(db, senderId) {
+  const row = await db
+    .prepare(`
+      SELECT text FROM conversations
+      WHERE sender_id = ?
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `)
+    .bind(senderId)
+    .first();
+
+  return row?.text?.includes('staff have been notified') ?? false;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // getRecentMessages — fetch last N messages for a sender
 //
 // Returns them in chronological order (oldest first) so they can be

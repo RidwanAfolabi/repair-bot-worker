@@ -44,7 +44,7 @@
  */
 
 import { handleIncomingMessage, handleStaffCommand } from './bot.js';
-import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting, purgeOldConversations } from './db.js';
+import { initDb, saveMessage, upsertContact, removeContact, refreshAutoMute, getSetting, purgeOldConversations, isContinuingUnalertedMediaRun } from './db.js';
 import { sendTextMessage, sendReadReceipt, sendStaffAlert } from './whatsapp.js';
 import { digitsOnly, phoneList, samePhone, normalizeId, displayId } from './phone.js';
 import { parseBranchNumbers } from './branches.js';
@@ -973,19 +973,32 @@ async function handlePostMessage(body, env) {
   if (msgType === 'image' || msgType === 'video' || msgType === 'document') {
     await sendReadReceipt(messageId, env);
 
-    await sendStaffAlert(
-      `📎 *${msgType.charAt(0).toUpperCase() + msgType.slice(1)} received from customer*\n\n` +
-      `*Customer:* ${senderLabel}\n\n` +
-      `Open *WhatsApp Business App* to view it.\n\n` +
-      `🤖 A'aisyah did NOT reply to this and cannot see the file, but she is still handling the conversation and will answer their next message normally.\n` +
-      `Send *!pause ${senderId}* to take over.`,
-      env
-    );
+    // Coalesce a burst: a customer sending 3-5 images/voice notes at once
+    // used to trigger one staff alert PER item — pure noise, since it's the
+    // same event. Only the first item in an unbroken run alerts; the D1
+    // record still happens every time, so the LLM keeps full context and
+    // staff still see every item logged once they open the thread.
+    const isBurst = await isContinuingUnalertedMediaRun(env.DB, senderId);
+
+    if (isBurst) {
+      console.log(`[Webhook] '${msgType}' from ${senderId} — part of an ongoing media burst, alert already sent`);
+    } else {
+      await sendStaffAlert(
+        `📎 *${msgType.charAt(0).toUpperCase() + msgType.slice(1)} received from customer*\n\n` +
+        `*Customer:* ${senderLabel}\n\n` +
+        `Open *WhatsApp Business App* to view it.\n\n` +
+        `🤖 A'aisyah did NOT reply to this and cannot see the file, but she is still handling the conversation and will answer their next message normally.\n` +
+        `Send *!pause ${senderId}* to take over.`,
+        env
+      );
+    }
 
     // Phrasing matters: this line becomes LLM context. It states the fact and
     // the limitation without implying staff have taken the conversation over,
     // which is what the previous wording ("staff alerted to view and respond")
-    // did — it read as a handoff and pushed her toward escalating.
+    // did — it read as a handoff and pushed her toward escalating. The exact
+    // phrase "staff have been notified" is also the marker
+    // isContinuingUnalertedMediaRun checks for above — keep them in sync.
     await saveMessage(env.DB, {
       senderId,
       role: 'customer',
@@ -996,21 +1009,31 @@ async function handlePostMessage(body, env) {
   }
 
   // ── Audio / voice notes ───────────────────────────────────────────────────
-  // Same treatment as media above: silent to the customer, staff alerted,
-  // logged as context so the conversation can carry on from their next
-  // typed message.
+  // Same treatment as media above: silent to the customer, staff alerted
+  // (once per unbroken burst, same as image/video/document above — a run can
+  // freely mix types, e.g. an image followed by a voice note with nothing in
+  // between still only alerts once), logged as context so the conversation
+  // can carry on from their next typed message.
   if (msgType === 'audio') {
     await sendReadReceipt(messageId, env);
 
-    await sendStaffAlert(
-      `🎤 *Voice note received from customer*\n\n` +
-      `*Customer:* ${senderLabel}\n\n` +
-      `Open *WhatsApp Business App* to listen.\n\n` +
-      `🤖 A'aisyah did NOT reply to this and cannot hear it, but she is still handling the conversation and will answer their next message normally.\n` +
-      `Send *!pause ${senderId}* to take over.`,
-      env
-    );
+    const isBurst = await isContinuingUnalertedMediaRun(env.DB, senderId);
 
+    if (isBurst) {
+      console.log(`[Webhook] 'audio' from ${senderId} — part of an ongoing media burst, alert already sent`);
+    } else {
+      await sendStaffAlert(
+        `🎤 *Voice note received from customer*\n\n` +
+        `*Customer:* ${senderLabel}\n\n` +
+        `Open *WhatsApp Business App* to listen.\n\n` +
+        `🤖 A'aisyah did NOT reply to this and cannot hear it, but she is still handling the conversation and will answer their next message normally.\n` +
+        `Send *!pause ${senderId}* to take over.`,
+        env
+      );
+    }
+
+    // "staff have been notified" here is the same marker the burst check
+    // above looks for — keep this phrase in sync with isContinuingUnalertedMediaRun.
     await saveMessage(env.DB, {
       senderId,
       role: 'customer',

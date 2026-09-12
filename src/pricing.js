@@ -181,6 +181,24 @@ const SYMBOL_ALIASES = [
   { pattern: /1\s*\+/, canonical: 'ONEPLUS' },
 ];
 
+// Shorthand that's safe ONLY next to a distinguishing pattern, not as a bare
+// word — "ip" alone is two letters, far too generic to alias on its own
+// (same reasoning as "1" above), but "ip" immediately followed by a model
+// number ("ip11", "ip 13 pro", "ip12") is a real, common, unambiguous way
+// customers type "iPhone" and is safe to recognize. Checked against the
+// NORMALIZED text (unlike SYMBOL_ALIASES, nothing here gets stripped by
+// normalize() — punctuation between "ip" and the number already collapses
+// to a space, which \s* already covers).
+//
+// Deliberately requires the number: bare "ip" with no model attached still
+// falls through to the "## SHORTHAND OR ABBREVIATED BRAND NAMES" prompt
+// instruction (ask the customer to write it out), since there's no way to
+// tell "ip" apart from an unrelated short word with real confidence unless
+// a model number pins it down.
+const PATTERN_ALIASES = [
+  { pattern: /\bIP\s*\d/, canonical: 'IPHONE' },
+];
+
 // Signal that a message can be answered WITHOUT knowing the device brand —
 // cables, protectors, deposits, chargers. Used ONLY to decide whether to
 // check the Services & Accessories fallback tab when no brand was matched.
@@ -287,6 +305,11 @@ export function matchBrandTab(customerText, tabTitles) {
   }
   for (const { pattern, canonical } of SYMBOL_ALIASES) {
     if (pattern.test(customerText)) {
+      aliasText += ' ' + canonical;
+    }
+  }
+  for (const { pattern, canonical } of PATTERN_ALIASES) {
+    if (pattern.test(normText)) {
       aliasText += ' ' + canonical;
     }
   }

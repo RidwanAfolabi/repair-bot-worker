@@ -103,3 +103,53 @@ describe("findFallbackTab", () => {
     expect(findFallbackTab(TABS)).toBe("Services & Accessories");
   });
 });
+
+
+describe("matchBrandTab — 'ip' + model number resolves to iPhone", () => {
+  // Reported production bug: customers writing "ip 11" / "ip12" got no
+  // pricing data fetched at all, since the brand was never named in full —
+  // the LLM would sometimes ask for it, but often not before an expensive
+  // extra turn, or not at all.
+  it("REGRESSION: 'ip11' (no space) resolves to iPhone", () => {
+    expect(matchBrandTab("ip11 skrin pecah", TABS)).toBe("iPhone");
+  });
+
+  it("REGRESSION: 'ip 11' (with space) resolves to iPhone", () => {
+    expect(matchBrandTab("ip 11 skrin pecah", TABS)).toBe("iPhone");
+  });
+
+  it("REGRESSION: 'ip12' resolves to iPhone", () => {
+    expect(matchBrandTab("berapa harga ip12 battery", TABS)).toBe("iPhone");
+  });
+
+  it("works with a trailing model suffix too ('ip 13 pro')", () => {
+    expect(matchBrandTab("ip 13 pro screen crack", TABS)).toBe("iPhone");
+  });
+
+  it("bare 'ip' with NO number attached is deliberately NOT aliased", () => {
+    // Too generic to safely recognize on its own — falls through to the
+    // LLM asking the customer to write the brand name in full instead.
+    expect(matchBrandTab("ip rosak skrin", TABS)).toBeNull();
+  });
+
+  it("does not falsely trigger on ordinary words containing 'ip'", () => {
+    for (const text of [
+      "saya nak jadi vip member",
+      "nak buat trip ke kedai",
+      "boleh zip file tak",
+      "senang je nak flip casing ni",
+    ]) {
+      expect(matchBrandTab(text, TABS)).toBeNull();
+    }
+  });
+
+  it("does not hijack an explicit iPad mention", () => {
+    // "ipad 9" contains "ip" immediately followed by a digit-ish word, but
+    // the direct match pass (checked first) must still win.
+    expect(matchBrandTab("ipad 9 skrin pecah", TABS)).toBe("iPad");
+  });
+
+  it("an explicit 'iphone' mention still matches normally alongside this", () => {
+    expect(matchBrandTab("iphone 12 skrin pecah", TABS)).toBe("iPhone");
+  });
+});

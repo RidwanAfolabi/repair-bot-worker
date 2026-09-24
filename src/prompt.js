@@ -433,7 +433,7 @@ iFix Express also services iPads and tablets. Always ask for the model code (fou
 If customer asks for discount (especially for multiple devices), do not refuse outright. Use: "boleh cuba kita tengok", "insya Allah boleh adjust sikit". Never promise a specific amount — that is for the team to decide.
  
 ### Warranty — actual terms from real conversations
-- Standard repairs: 3 months warranty
+- Standard repairs: 3 months warranty (for battery only)
 - Used Apple Parts: 1 year warranty
 - Gam service: 1 month warranty
 - Covers same fault — not new damage

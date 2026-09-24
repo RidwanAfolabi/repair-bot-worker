@@ -57,10 +57,39 @@ describe("callClaude — prompt caching request shape", () => {
     expect(body.system[0].text).not.toContain("some rows");
   });
 
-  it("top-level cache_control auto-caches the growing message history", async () => {
+  it("REGRESSION: no top-level cache_control — that field auto-places the breakpoint on the ever-changing tail and wastes a cache write on every call", async () => {
     await generateReply(history, "next question", env, "");
     const { body } = getCaptured();
-    expect(body.cache_control).toEqual({ type: "ephemeral" });
+    expect(body.cache_control).toBeUndefined();
+  });
+
+  it("cache breakpoint is placed explicitly on the LAST HISTORY message, not the newest turn", async () => {
+    await generateReply(history, "next question", env, "");
+    const { body } = getCaptured();
+
+    const lastHistoryMsg = body.messages.at(-2);   // history[2] ("staff"); index -1 is the newest turn
+    expect(Array.isArray(lastHistoryMsg.content)).toBe(true);
+    expect(lastHistoryMsg.content).toEqual([
+      {
+        type: "text",
+        text: "[Staff replied] ok saya bagi RM200 untuk cik",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+  });
+
+  it("earlier history messages carry no cache_control — only the last one is the breakpoint", async () => {
+    await generateReply(history, "next question", env, "");
+    const { body } = getCaptured();
+    expect(body.messages[0]).toEqual({ role: "user", content: "berapa harga screen iphone 12" });
+    expect(body.messages[1]).toEqual({ role: "assistant", content: "RM230 in sya Allah" });
+  });
+
+  it("an empty history sends no breakpoint at all — nothing to cache yet", async () => {
+    await generateReply([], "first message ever", env, "");
+    const { body } = getCaptured();
+    expect(body.messages).toHaveLength(1);
+    expect(JSON.stringify(body.messages)).not.toContain("cache_control");
   });
 
   it("dynamic context (time + pricing) is attached to the newest user turn, not the system block", async () => {
@@ -97,15 +126,14 @@ describe("callClaude — prompt caching request shape", () => {
     expect(first).toBe(second);
   });
 
-  it("history is still mapped with roles and the staff marker exactly as before", async () => {
+  it("history is still mapped with roles and the staff marker exactly as before, aside from the cache breakpoint on the last entry", async () => {
     await generateReply(history, "next", env, "");
     const { body } = getCaptured();
 
-    expect(body.messages.slice(0, 3)).toEqual([
-      { role: "user",      content: "berapa harga screen iphone 12" },
-      { role: "assistant", content: "RM230 in sya Allah" },
-      { role: "assistant", content: "[Staff replied] ok saya bagi RM200 untuk cik" },
-    ]);
+    expect(body.messages.slice(0, 3).map(m => m.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(body.messages[0].content).toBe("berapa harga screen iphone 12");
+    expect(body.messages[1].content).toBe("RM230 in sya Allah");
+    expect(body.messages[2].content[0].text).toBe("[Staff replied] ok saya bagi RM200 untuk cik");
   });
 
   it("still sends model, max_tokens and disabled thinking as before", async () => {

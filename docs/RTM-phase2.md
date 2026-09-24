@@ -18,7 +18,7 @@
 |---|---|
 | `Live` | Implemented, deployed, currently in effect |
 | `Deferred` | Explicitly raised and postponed by deliberate decision, not forgotten |
-| `Known Gap` | Identified as missing or incomplete; not yet scheduled |
+| `Known Gap` | Identified as missing or incomplete; not yet started or scheduled |
 | `Superseded` | Was implemented, later deliberately replaced — kept for history |
 | `Planned` | Scaffolded (code exists) but intentionally not activated |
 

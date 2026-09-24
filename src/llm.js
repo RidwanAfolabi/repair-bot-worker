@@ -146,14 +146,29 @@ async function callGemini(history, newMessage, env, pricingContext) {
 // prompt-caching docs § Mid-conversation system messages — so this uses the
 // documented fallback for models without that: text in a user turn.)
 //
-// A second, independent cache layer: top-level `cache_control` below asks
-// Claude to also auto-cache the growing MESSAGE history for this specific
-// customer, on top of the system-prompt cache shared across all customers.
+// A second, independent cache layer caches the growing per-customer MESSAGE
+// history, on top of the system-prompt cache shared across all customers.
 // Each reply to the same customer resends their whole prior conversation
-// (bot.js re-fetches it fresh from D1 every time) — with this on, only the
-// newest turn is billed at full price; everything already seen is a cache
-// read. Works fully while a conversation stays under HISTORY_MESSAGE_LIMIT
-// (32) messages; past that the sliding window drops the oldest message each
+// (bot.js re-fetches it fresh from D1 every time) — an explicit breakpoint
+// on the LAST HISTORY message means everything up to that point is a cache
+// read on the next reply, and only the newest exchange is billed at full
+// price.
+//
+// Deliberately NOT using Anthropic's top-level `cache_control` ("automatic
+// caching") for this. That field places the breakpoint on the very last
+// block of the request — which here is always the dynamicContext+newMessage
+// tail: a live timestamp and live pricing that differ on every single call,
+// plus the customer's newest text, which is never resent verbatim on their
+// next turn (it only comes back re-saved through D1 and re-mapped as plain
+// history). Anthropic's own docs name this exact shape as the standard
+// mistake: a breakpoint on content that changes every request pays the
+// cache-write premium on every call and can never produce a read, since the
+// hash at that position never repeats. Placing the breakpoint explicitly at
+// the end of history instead marks only the part of the prompt that
+// actually is identical next time.
+//
+// Works fully while a conversation stays under HISTORY_MESSAGE_LIMIT (32)
+// messages; past that the sliding window drops the oldest message each
 // time, which shifts the whole array and costs that customer's next reply a
 // cache miss on the history portion specifically — the system-prompt cache
 // is unaffected either way, since it's shared across every customer, not
@@ -180,8 +195,23 @@ async function callGemini(history, newMessage, env, pricingContext) {
 async function callClaude(history, newMessage, env, pricingContext) {
   const dynamicContext = buildDynamicContext(pricingContext);
 
+  const historyMessages = history.map(m => ({
+    role:    toApiRole(m.role),
+    content: toApiText(m.role, m.text),
+  }));
+
+  // Cache breakpoint at the end of history — never on the newest turn. See
+  // the file-level comment above for why this replaces the top-level
+  // `cache_control` field.
+  if (historyMessages.length > 0) {
+    const last = historyMessages[historyMessages.length - 1];
+    last.content = [
+      { type: 'text', text: last.content, cache_control: { type: 'ephemeral' } },
+    ];
+  }
+
   const messages = [
-    ...history.map(m => ({ role: toApiRole(m.role), content: toApiText(m.role, m.text) })),
+    ...historyMessages,
     {
       role: 'user',
       content: [
@@ -211,9 +241,8 @@ async function callClaude(history, newMessage, env, pricingContext) {
         { type: 'text', text: STATIC_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
       ],
       messages,
-      max_tokens:    500,
-      thinking:      { type: 'disabled' },
-      cache_control: { type: 'ephemeral' },   // auto-caches the growing per-customer history tail
+      max_tokens: 500,
+      thinking:   { type: 'disabled' },
     }),
   });
 
